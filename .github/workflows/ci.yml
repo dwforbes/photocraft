@@ -66,13 +66,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies (egui/winit/rfd)
+      # libjxl-tools: the JPEG XL export tests through libjxl's `cjxl` (crates/io/tests/jxl.rs)
+      # run here; elsewhere they pass with a note when cjxl isn't installed.
+      - name: Install Linux system dependencies (egui/winit/rfd, cjxl)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev libgtk-3-dev
+            libgl1-mesa-dev libgtk-3-dev libjxl-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -181,6 +183,7 @@ jobs:
           - { crate: codecs, name: decode_tiff }
           - { crate: codecs, name: decode_exr }
           - { crate: codecs, name: decode_heif }
+          - { crate: codecs, name: decode_jxl }
           - { crate: format, name: load }
     steps:
       - uses: actions/checkout@v4

@@ -301,6 +301,17 @@ pub fn export_flat(doc: &Document, format: Format, opts: &ExportOptions) -> Resu
         img = cmyk_image_to_srgb(&img)?;
         warnings.push(format!("CMYK converted to sRGB for {format:?} through the document's colour profile"));
     }
+    if format == Format::Jxl
+        && opts.jxl_use_cjxl
+        && let Some((bytes, w)) = crate::jxl_tool::encode(&img, &opts.encode)?
+    {
+        // libjxl's cjxl keeps the profile and writes lossy files; see `jxl_tool`.
+        warnings.extend(w);
+        return Ok(ExportResult { bytes, warnings });
+    }
+    if format == Format::Jxl && opts.encode.jxl_quality.is_some() {
+        warnings.push("lossy JPEG XL needs libjxl's cjxl, which wasn't found; the file was written lossless".to_string());
+    }
     if matches!(format, Format::OpenExr | Format::Hdr) {
         // OpenEXR and Radiance HDR store linear light (read back as linear sRGB, see [`import_flat`]).
         if let Some(linear) = convert_rgb(&img, Builtin::LinearSrgb.profile(), Intent::RelativeColorimetric, false, CSample::F32)? {
@@ -311,7 +322,11 @@ pub fn export_flat(doc: &Document, format: Format, opts: &ExportOptions) -> Resu
         // write values that only mean something under the dropped profile.
         if let Some(srgb) = convert_rgb(&img, Builtin::Srgb.profile(), Intent::Perceptual, true, img.sample_type())? {
             img = srgb;
-            warnings.push(format!("colours converted to sRGB; {format:?} can't embed the document's colour profile"));
+            warnings.push(if format == Format::Jxl {
+                "colours converted to sRGB; the built-in JPEG XL encoder can't embed the document's colour profile (libjxl's cjxl can)".to_string()
+            } else {
+                format!("colours converted to sRGB; {format:?} can't embed the document's colour profile")
+            });
         }
     }
     for w in codecs::fidelity_warnings_with(&img, format, &opts.encode) {

@@ -17,6 +17,8 @@ libfuzzer-sys = "0.4"
 photocraft-codecs = { path = "..", features = ["heif"] }
 # Called directly too: the codec turns its panics into errors (see decode_heif.rs).
 heic-rs = "=0.1.1"
+# Called directly too (see decode_jxl.rs).
+jxl-oxide = { version = "=0.12.6", default-features = false }
 
 [profile.release]
 debug = 1
@@ -59,6 +61,13 @@ bench = false
 [[bin]]
 name = "decode_heif"
 path = "fuzz_targets/decode_heif.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_jxl"
+path = "fuzz_targets/decode_jxl.rs"
 test = false
 doc = false
 bench = false

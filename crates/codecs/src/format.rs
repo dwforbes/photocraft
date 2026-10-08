@@ -23,6 +23,10 @@ pub enum Format {
     Avif,
     /// HEIF/HEIC (HEVC-coded): read-only; see [`ASYMMETRIC_EXCEPTIONS`].
     Heif,
+    /// JPEG XL: decoded with jxl-oxide; the built-in encoder is lossless (zune-jpegxl), and
+    /// `photocraft-io` writes lossy files (and keeps ICC profiles) through libjxl's `cjxl` when
+    /// it is installed.
+    Jxl,
 }
 
 /// What a format can hold **and** what this crate reads/writes for it.
@@ -76,7 +80,7 @@ const ALL_LAYOUTS: &[ChannelLayout] = &[L::Gray, L::GrayA, L::Rgb, L::Rgba, L::C
 
 impl Format {
     /// Every format known to the crate (enabled or not).
-    pub const ALL: [Format; 14] = [
+    pub const ALL: [Format; 15] = [
         Format::Png,
         Format::Jpeg,
         Format::Tiff,
@@ -91,6 +95,7 @@ impl Format {
         Format::Hdr,
         Format::Avif,
         Format::Heif,
+        Format::Jxl,
     ];
 
     pub fn caps(self) -> FormatCaps {
@@ -119,6 +124,7 @@ impl Format {
             Format::Hdr => "Radiance HDR",
             Format::Avif => "AVIF",
             Format::Heif => "HEIF",
+            Format::Jxl => "JPEG XL",
         }
     }
 
@@ -140,6 +146,7 @@ impl Format {
             Format::Hdr => &["hdr"],
             Format::Avif => &["avif"],
             Format::Heif => &["heic", "heif", "hif"],
+            Format::Jxl => &["jxl"],
         }
     }
 
@@ -159,6 +166,7 @@ impl Format {
             Format::Hdr => "image/vnd.radiance",
             Format::Avif => "image/avif",
             Format::Heif => "image/heif",
+            Format::Jxl => "image/jxl",
         }
     }
 
@@ -208,6 +216,9 @@ pub fn caps(format: Format) -> FormatCaps {
         Format::Heif => {
             FormatCaps { read: cfg!(feature = "heif"), write: false, depths: &[S::U8, S::U16], icc: true, exif: true, xmp: true, lossy: true, ..base }
         }
+        // What the built-in encoder writes: the format itself also holds float samples, CMYK, ICC
+        // profiles and lossy data, and reading returns all of those except CMYK.
+        Format::Jxl => FormatCaps { depths: &[S::U8, S::U16], layouts: RGB_GRAY, exif: true, xmp: true, animation: true, ..base },
     }
 }
 
@@ -235,6 +246,10 @@ pub fn detect(bytes: &[u8]) -> Option<Format> {
     }
     if b.starts_with(&[0x76, 0x2F, 0x31, 0x01]) {
         return Some(Format::OpenExr);
+    }
+    // A bare codestream, or the ISO BMFF container's signature box.
+    if b.starts_with(&[0xFF, 0x0A]) || b.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
+        return Some(Format::Jxl);
     }
     if b.starts_with(b"#?RADIANCE") || b.starts_with(b"#?RGBE") {
         return Some(Format::Hdr);

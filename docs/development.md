@@ -63,6 +63,7 @@ If the device is lost while running (#243), every GPU entry point checks the dev
 | `PHOTOCRAFT_CPU_COMPOSE=1` | Keep the wgpu canvas but composite on the CPU (compare GPU vs CPU renders, e.g. with the snapshot example) |
 | `PHOTOCRAFT_LOCALE` | Override Auto's native UI language for this launch; unsupported tags use English. See [system language detection](localization.md#first-launch-and-system-language). |
 | `PHOTOCRAFT_FX_TRACE=1` | Print the CPU time spent on GPU effect shapes and distance fields per rebuild |
+| `PHOTOCRAFT_CJXL` | Path to libjxl's `cjxl` for JPEG XL export, or `off` to always use the built-in lossless encoder. Unset: `PATH`, then the usual install folders (Homebrew, MacPorts, WinGet, Scoop). See `crates/io/src/jxl_tool.rs` |
 | `PHOTOCRAFT_THEME_FILE=tokens.json` | **Debug builds only:** live design-token overrides, re-read on change |
 
 ### Live design tokens

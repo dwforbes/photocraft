@@ -41,7 +41,9 @@ fn check_roundtrip(format: Format, layout: ChannelLayout, sample: SampleType) {
 
     // Native storage must be preserved when the format declares support.
     let float_pnm_special = format == Format::Pnm && sample.is_float();
-    if c.layouts.contains(&layout) && c.depths.contains(&sample) && !float_pnm_special {
+    // JPEG XL's built-in encoder writes 16-bit gray+alpha as RGBA (see `fidelity::plan`).
+    let jxl_graya16 = format == Format::Jxl && layout == ChannelLayout::GrayA && sample == SampleType::U16;
+    if c.layouts.contains(&layout) && c.depths.contains(&sample) && !float_pnm_special && !jxl_graya16 {
         assert_eq!(back.layout(), layout, "{format:?} must keep layout");
         assert_eq!(back.sample_type(), sample, "{format:?} must keep sample type");
     }
@@ -139,6 +141,9 @@ mod exr {
 }
 mod hdr {
     cases!(Format::Hdr);
+}
+mod jxl {
+    cases!(Format::Jxl);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,11 +244,22 @@ fn webp_lossy_request_is_a_lossy_file() {
 
 #[test]
 fn one_pixel_images_roundtrip() {
-    for f in rw_formats() {
+    // The built-in JPEG XL encoder needs 2×2 pixels (see `jxl_one_pixel_is_an_encode_error`).
+    for f in rw_formats().into_iter().filter(|f| *f != Format::Jxl) {
         let img = synth(1, 1, ChannelLayout::Rgb, SampleType::U8, 1, 0.0);
         let back = decode(&encode(&img, f, &EncodeOptions::default()).unwrap()).unwrap();
         assert_eq!(back.dimensions(), (1, 1), "{f:?}");
     }
+}
+
+#[test]
+fn jxl_one_pixel_is_an_encode_error() {
+    for (w, h) in [(1, 1), (1, 9), (9, 1)] {
+        let img = synth(w, h, ChannelLayout::Rgb, SampleType::U8, 1, 0.0);
+        assert!(matches!(encode(&img, Format::Jxl, &EncodeOptions::default()), Err(CodecError::Encode { .. })), "{w}x{h}");
+    }
+    let img = synth(2, 2, ChannelLayout::Rgb, SampleType::U8, 1, 0.0);
+    assert_eq!(decode(&encode(&img, Format::Jxl, &EncodeOptions::default()).unwrap()).unwrap().data(), img.data());
 }
 
 #[test]

@@ -11,7 +11,7 @@ use crate::state::DialogKind;
 use crate::theme::Tokens;
 use crate::{ExportSettings, PhotocraftApp};
 
-const FORMATS: [(&str, &str); 5] = [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("tif", "TIFF"), ("tga", "TGA")];
+const FORMATS: [(&str, &str); 6] = [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("jxl", "JPEG XL"), ("tif", "TIFF"), ("tga", "TGA")];
 
 pub fn open(app: &mut PhotocraftApp) -> Result<u64, String> {
     let st = app.session.active().ok_or("no document")?;
@@ -108,6 +108,7 @@ fn settings(f: &Map<String, Value>) -> ExportSettings {
         jpeg_quality: (fmt == "jpg").then_some(quality),
         webp_lossless: fmt != "webp" || lossless(f),
         webp_quality: (fmt == "webp" && !lossless(f)).then_some(quality),
+        jxl_quality: (fmt == "jxl" && !lossless(f)).then_some(quality),
         xmp_all: s(f, "metadata") == "all",
         ..Default::default()
     }
@@ -141,12 +142,12 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 }
             });
             let fmt = s_fmt(f);
-            if fmt == "webp" {
+            if fmt == "webp" || fmt == "jxl" {
                 let mut ll = lossless(f);
                 crate::widgets::checkbox(ui, &mut ll, tl!("Lossless"));
                 f.insert("lossless".into(), json!(ll));
             }
-            if fmt == "jpg" || (fmt == "webp" && !lossless(f)) {
+            if fmt == "jpg" || ((fmt == "webp" || fmt == "jxl") && !lossless(f)) {
                 let mut q = n(f, "quality", 85.0) as f32;
                 crate::widgets::slider_row(ui, tl!("Quality"), &mut q, 1.0..=100.0, "%", None);
                 f.insert("quality".into(), json!(q.round()));
@@ -302,5 +303,21 @@ mod tests {
         assert_eq!(s.webp_quality, None);
         f.insert("format".into(), json!("png"));
         assert!(settings(&f).webp_lossless, "other formats leave the WebP default alone");
+    }
+
+    #[test]
+    fn jpeg_xl_settings_follow_the_lossless_switch() {
+        let mut f = Map::new();
+        f.insert("format".into(), json!("jxl"));
+        f.insert("quality".into(), json!(90));
+        let s = settings(&f);
+        assert_eq!(s.jxl_quality, Some(90), "Export As writes lossy JPEG XL unless asked");
+        assert!(s.webp_lossless && s.webp_quality.is_none() && s.jpeg_quality.is_none());
+        f.insert("lossless".into(), json!(true));
+        assert_eq!(settings(&f).jxl_quality, None);
+        f.insert("format".into(), json!("webp"));
+        f.insert("lossless".into(), json!(false));
+        assert_eq!(settings(&f).jxl_quality, None, "other formats leave JPEG XL lossless");
+        assert!(FORMATS.iter().any(|(k, l)| *k == "jxl" && *l == "JPEG XL"));
     }
 }

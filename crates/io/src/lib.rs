@@ -32,6 +32,7 @@ pub mod comps_map;
 pub mod effects_map;
 mod flat;
 mod gradient_bake;
+pub mod jxl_tool;
 pub mod linked;
 mod multichannel_map;
 pub mod pattern_map;
@@ -126,11 +127,14 @@ pub struct ExportOptions {
     /// Which part of the document's XMP packet a flat export embeds (PSD/PSB/`.pcraft`
     /// always keep everything). Everything by default, as Save As does; Export As offers None.
     pub xmp: XmpEmbed,
+    /// JPEG XL: write with libjxl's `cjxl` when it is installed (lossy files, ICC profiles kept;
+    /// see [`jxl_tool`]). `false` always uses the built-in lossless encoder.
+    pub jxl_use_cjxl: bool,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        ExportOptions { encode: EncodeOptions::default(), force_psb: false, tiff_layers: false, xmp: XmpEmbed::All }
+        ExportOptions { encode: EncodeOptions::default(), force_psb: false, tiff_layers: false, xmp: XmpEmbed::All, jxl_use_cjxl: true }
     }
 }
 

@@ -124,6 +124,12 @@ pub struct EncodeOptions {
     /// only when it could pass the 4 GiB a classic TIFF can address.
     pub tiff_bigtiff: bool,
     pub exr_compression: ExrCompression,
+    /// JPEG XL: `None` writes a lossless file; `Some(q)` asks for lossy at quality 1..=100
+    /// (libjxl's scale, where 90 is visually lossless). This crate's own encoder is lossless only
+    /// and ignores it; `photocraft-io` honours it when libjxl's `cjxl` does the encoding.
+    pub jxl_quality: Option<u8>,
+    /// JPEG XL encoder effort 1..=10 (cjxl's `-e`; higher is smaller and slower, 7 is the default).
+    pub jxl_effort: u8,
     /// Embed the ICC profile when the format supports it.
     pub embed_icc: bool,
     /// Embed EXIF/XMP/DPI/text when the format supports it.
@@ -142,6 +148,8 @@ impl Default for EncodeOptions {
             tiff_compression: TiffCompression::Deflate,
             tiff_bigtiff: false,
             exr_compression: ExrCompression::Zip16,
+            jxl_quality: None,
+            jxl_effort: 7,
             embed_icc: true,
             embed_metadata: true,
         }

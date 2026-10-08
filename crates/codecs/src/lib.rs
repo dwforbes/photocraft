@@ -33,7 +33,7 @@ pub use crate::options::{DecodeOptions, EncodeOptions, ExrCompression, Limits, P
 pub use crate::orientation::{exif_orientation, upright_exif, upright_xmp};
 pub use half::f16;
 
-use crate::codecs::{exr, heif, jpeg, png, pnm, tiff, via_image, webp};
+use crate::codecs::{exr, heif, jpeg, jxl, png, pnm, tiff, via_image, webp};
 
 /// Detect the format and decode with default [`Limits`].
 pub fn decode(bytes: &[u8]) -> Result<Image, CodecError> {
@@ -66,14 +66,16 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         Format::Pnm => pnm::decode(bytes, l),
         Format::OpenExr => exr::decode(bytes, l),
         Format::Heif => heif::decode(bytes, l, opts.keep_orientation),
+        Format::Jxl => jxl::decode(bytes, l, opts.keep_orientation),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::decode(format, bytes, l),
     }?;
     // Turn the pixels upright, like Photoshop: a TIFF records it in the decoded page's own
     // directory, the others in their EXIF block. The metadata is rewritten to Orientation = 1
-    // on the way. HEIF keeps it in its container, and its decoder has already applied it.
+    // on the way. HEIF keeps it in its container and JPEG XL in its codestream, and their
+    // decoders have already applied it.
     let o = match format {
         Format::Tiff => tiff::orientation(bytes, None),
-        Format::Heif => 1,
+        Format::Heif | Format::Jxl => 1,
         _ => img.meta.exif.as_deref().map_or(1, exif_orientation),
     };
     finish_decode(img, o, opts)
@@ -155,6 +157,7 @@ pub fn encode(image: &Image, format: Format, opts: &EncodeOptions) -> Result<Vec
         Format::Pnm => pnm::encode(image, plan, opts),
         Format::OpenExr => exr::encode(image, plan, opts),
         Format::Heif => Err(CodecError::unsupported(format, "encoding is not available in this build")),
+        Format::Jxl => jxl::encode(image, plan, opts),
         Format::Gif | Format::Bmp | Format::Tga | Format::Ico | Format::Qoi | Format::Hdr | Format::Avif => via_image::encode(format, image, plan, opts),
     }
 }

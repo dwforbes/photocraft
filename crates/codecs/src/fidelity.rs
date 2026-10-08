@@ -152,7 +152,15 @@ pub(crate) fn plan(image: &Image, format: Format, _opts: &EncodeOptions) -> Plan
         // PNM: integer data can use any layout (PAM); float goes to PFM
         // which only has gray and RGB.
         Format::Pnm if sample.is_float() => Plan { layout: pick_layout(layout, &[ChannelLayout::Gray, ChannelLayout::Rgb], false), sample: SampleType::F32 },
-        _ => Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: pick_sample(sample, c.depths) },
+        _ => {
+            let plan = Plan { layout: pick_layout(layout, c.layouts, c.alpha), sample: pick_sample(sample, c.depths) };
+            // zune-jpegxl 0.5.2 reads 16-bit gray+alpha samples as signed, so values past 32767
+            // would wrap: that pair is written as RGBA instead (lossless, just larger).
+            if format == Format::Jxl && plan.layout == ChannelLayout::GrayA && plan.sample == SampleType::U16 {
+                return Plan { layout: ChannelLayout::Rgba, ..plan };
+            }
+            plan
+        }
     }
 }
 

@@ -116,8 +116,8 @@ pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
 
 /// Extensions the batch commands pick up from a folder.
 const OPENABLE: &[&str] = &[
-    "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "heic", "heif",
-    "hif", "dng", "cr2", "nef", "nrw", "arw", "pef",
+    "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "jxl", "heic",
+    "heif", "hif", "dng", "cr2", "nef", "nrw", "arw", "pef",
 ];
 
 pub(crate) fn file_name(path: &str) -> String {
@@ -215,9 +215,10 @@ pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> R
     if let Some(q) = save.quality {
         let q = (q.clamp(0.0, 12.0) / 12.0 * 99.0 + 1.0).round() as u8;
         opts.encode.jpeg_quality = q;
-        // A quality on a WebP save asks for the lossy encoder; the default WebP stays lossless.
+        // A quality on a WebP or JPEG XL save asks for a lossy file; by default both stay lossless.
         opts.encode.webp_quality = q;
         opts.encode.webp_lossless = false;
+        opts.encode.jxl_quality = Some(q);
     }
     photocraft_io::export(doc, path, &opts).map(|r| (r.bytes, r.warnings)).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }

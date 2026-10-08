@@ -17,7 +17,8 @@ USAGE:
   photocraft-cli convert <in> <out> [--format <ext>] [--quality <1-100>] [--tiff-layers]
       Convert between formats (.pcraft, .psd, .png, .jpg, .tif, .webp, .exr, …).
       TIFF output is flat unless --tiff-layers keeps the layers (Photoshop layer data).
-      --quality sets the JPEG or WebP quality; a WebP written with a quality is lossy, without one lossless.
+      --quality sets the JPEG, WebP or JPEG XL quality; a WebP or JPEG XL written with a quality is lossy, without one lossless.
+      JPEG XL is written by libjxl's cjxl when it is installed (PHOTOCRAFT_CJXL names it, or `off`), else losslessly by the built-in encoder.
   photocraft-cli info <file> [--compact]
       Print the document as JSON (size, mode, depth, layer tree).
   photocraft-cli run (<file> | --new <json>) --cmd <id> [--params <json>] [--cmd …] [--out <file>] [--format <ext>] [--quality <1-100>] [--tiff-layers]
@@ -173,9 +174,10 @@ fn export_opts(a: &Args) -> Result<ExportOptions, String> {
     if let Some(q) = a.get("--quality") {
         let q = q.parse().ok().filter(|q| (1..=100).contains(q)).ok_or_else(|| format!("bad --quality `{q}`: expected a whole number from 1 to 100"))?;
         o.encode.jpeg_quality = q;
-        // Asking for a quality asks for a lossy WebP; the default WebP stays lossless.
+        // Asking for a quality asks for a lossy WebP or JPEG XL; by default both stay lossless.
         o.encode.webp_quality = q;
         o.encode.webp_lossless = false;
+        o.encode.jxl_quality = Some(q);
     }
     Ok(o)
 }

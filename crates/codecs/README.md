@@ -46,6 +46,7 @@ let out = encode(&img, Format::Tiff, &EncodeOptions::default())?;
 | Radiance HDR | yes | yes | F32 | RGB | no | no | no | no | no | no | yes (RGBE) | `image` |
 | AVIF | **no** | only with feature `avif` | U8 | RGB, RGBA | yes | no | no | no | no | no | yes | `image` + `ravif` |
 | HEIF/HEIC | with feature `heif` | **no** | U8, U16 (10/12-bit decodes to U16) | RGB, RGBA | yes (auxiliary alpha) | yes (`colr` prof) | yes | yes | no | no | n/a | `heic-rs` |
+| JPEG XL | yes | yes (lossless) | U8, U16 (read: also F32) | Gray, GrayA, RGB, RGBA | yes | read only | yes (`Exif` box) | yes (`xml ` box) | no | no | no | `jxl-oxide` / `zune-jpegxl` |
 
 "Native" means the data is stored and read back without conversion. Anything else is converted by
 the encode plan, and `fidelity_warnings` reports the conversion when it loses information:
@@ -83,6 +84,19 @@ the same.
 * **Lossy WebP.** There is no pure-Rust lossy WebP encoder. We always write lossless WebP, and
   `webp_lossless: false` returns `CodecError::Unsupported`. We can read both lossy and lossless
   files.
+* **JPEG XL.** Decoding uses jxl-oxide (pure Rust, the whole format): VarDCT and modular, up to
+  16-bit integer (wider integers and float come back as F32), alpha, ICC profiles (an sRGB file
+  opens untagged; any other colour encoding gets the profile jxl-oxide synthesizes for it), EXIF
+  and XMP boxes (Brotli-compressed `brob` ones included), and the first frame of an animation
+  with `MoreFrames`. The codestream's orientation is applied and EXIF Orientation rewritten to 1.
+  CMYK files return `Unsupported` rather than wrong colours. Decoding is checked against libjxl's
+  `djxl` (`tests/jxl.rs`).
+  The built-in encoder (zune-jpegxl) is lossless only, writes sRGB (no ICC profile) and needs
+  at least 2×2 pixels; `jxl_quality` is ignored here. Two zune-jpegxl 0.5.2 bugs are worked
+  around: its header declares alpha 8-bit even for 16-bit images (the header is rebuilt, after
+  checking it bit for bit), and it reads 16-bit gray+alpha as signed (that pair is written as
+  RGBA). `photocraft-io` writes JPEG XL with libjxl's `cjxl` instead when it is installed:
+  lossy files, ICC profiles kept, any size (see `photocraft_io::jxl_tool`).
 * **Animation and multi-page files** (APNG, animated GIF/WebP, multi-page TIFF): only the first
   frame or page is decoded, and a single frame is written. `FormatCaps::animation` marks
   containers that can hold more frames. The decoded image then carries a

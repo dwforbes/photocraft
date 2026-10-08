@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// brushes (.abr) and gradients (.grd), which go to the preset libraries.
 const OPEN_EXTS: &[&str] = &[
     "pcraft", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam",
-    "pfm", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd",
+    "pfm", "jxl", "heic", "heif", "hif", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd",
 ];
 
 /// File › Save As formats: (filter name, extensions). The filter matching the suggested name's
@@ -27,6 +27,7 @@ const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("PNG", &["png"]),
     ("JPEG", &["jpg"]),
     ("WebP", &["webp"]),
+    ("JPEG XL", &["jxl"]),
     ("TIFF", &["tif"]),
     ("Targa", &["tga"]),
     ("OpenEXR", &["exr"]),
@@ -159,6 +160,7 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
             if let Some(q) = settings.webp_quality {
                 opts.encode.webp_quality = q;
             }
+            opts.encode.jxl_quality = settings.jxl_quality;
             opts.tiff_layers = settings.tiff_layers;
             opts.xmp = if settings.xmp_all { photocraft_io::XmpEmbed::All } else { photocraft_io::XmpEmbed::None };
             crate::crash_guard::guard("Export", || photocraft_io::export(doc, path, &opts).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string()))

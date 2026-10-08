@@ -31,10 +31,17 @@ zune-jpeg = "0.5"
 zune-core = "0.5"
 jpeg-encoder = "0.6"
 photocraft-heif = { path = "../heif", optional = true }
+# JPEG XL: decode with jxl-oxide (pure Rust, the full spec); the built-in encoder is zune-jpegxl
+# (pure Rust, lossless only). photocraft-io prefers libjxl's `cjxl` for writing when it is installed.
+# Pinned exactly: both parse or produce untrusted data; moving a pin re-runs the `decode_jxl` fuzz target.
+jxl-oxide = { version = "=0.12.6", default-features = false }
+zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 
 # Orientation is applied a band of rows per task on native; wasm stays single-threaded.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon.workspace = true
+jxl-oxide = { version = "=0.12.6", default-features = false, features = ["rayon"] }
+zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std", "threads"] }
 
 [dev-dependencies]
 proptest.workspace = true

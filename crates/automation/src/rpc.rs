@@ -103,6 +103,7 @@ impl Headless {
                     opts.encode.jpeg_quality = q.clamp(1, 100) as u8;
                     opts.encode.webp_quality = q.clamp(1, 100) as u8;
                     opts.encode.webp_lossless = false;
+                    opts.encode.jxl_quality = Some(q.clamp(1, 100) as u8);
                 }
                 let path = str_of(&p, "path").map(PathBuf::from);
                 self.save(index_of(&p), path.as_deref(), str_of(&p, "format"), &opts)
