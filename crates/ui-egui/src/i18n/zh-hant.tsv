@@ -2113,3 +2113,5 @@ cameraRaw	Blending	混合
 	Lines +/−	行數 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}：{prs} 個 PR，{commits} 次提交，行 +{added} / −{deleted}（Δ {delta}），二進位檔 +{binAdded} / −{binDeleted}，{first} – {last}
 	Apply At Canvas Bounds	套用效果至版面邊界
+	Could not open	無法開啟
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}：路徑不是有效的 Unicode；請重新命名檔案後再開啟。

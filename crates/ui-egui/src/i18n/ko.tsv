@@ -2720,3 +2720,5 @@ cameraRaw	Color	색상
 	Lines +/−	줄 +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: PR {prs}개, 커밋 {commits}개, 줄 +{added} / −{deleted} (Δ {delta}), 바이너리 +{binAdded} / −{binDeleted}, {first} – {last}
 	Apply At Canvas Bounds	캔버스 경계에 효과 적용
+	Could not open	열 수 없음
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: 경로가 올바른 유니코드가 아닙니다. 파일 이름을 바꾼 뒤 다시 여세요.

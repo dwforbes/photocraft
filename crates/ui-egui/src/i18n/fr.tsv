@@ -2567,3 +2567,5 @@ cameraRaw	Blending	Fusion
 	Lines +/−	Lignes +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login} : {prs} PR, {commits} commits, +{added} / −{deleted} lignes (Δ {delta}), +{binAdded} / −{binDeleted} fichiers binaires, {first} – {last}
 	Apply At Canvas Bounds	Appliquer l’effet aux limites de la zone de travail
+	Could not open	Impossible d’ouvrir
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path} : le chemin n’est pas un Unicode valide ; renommez le fichier puis rouvrez-le.

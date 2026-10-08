@@ -2207,3 +2207,5 @@ cameraRaw	Amount	Cantidad
 	Lines +/−	Líneas +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PR, {commits} commits, +{added} / −{deleted} líneas (Δ {delta}), +{binAdded} / −{binDeleted} archivos binarios, {first} – {last}
 	Apply At Canvas Bounds	Aplicar efecto en los límites del lienzo
+	Could not open	No se pudo abrir
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: la ruta no es Unicode válido; cambia el nombre del archivo y vuelve a abrirlo.

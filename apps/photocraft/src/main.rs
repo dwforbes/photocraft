@@ -393,8 +393,10 @@ fn main() -> eframe::Result {
             // Paths on the command line (Linux/Windows file associations, `photocraft a.psd`).
             app.open_paths(&files);
             if !unreadable_paths.is_empty() {
-                let lines = unreadable_paths.iter().map(|p| format!("{p}: the path is not valid Unicode; rename the file and open it again.")).collect();
-                photocraft_ui_egui::notices::post(&mut app, "Could not open", lines, true, None);
+                use photocraft_ui_egui::i18n;
+                let line = i18n::t("{path}: the path is not valid Unicode; rename the file and open it again.");
+                let lines = unreadable_paths.iter().map(|p| i18n::fmt(line, &[("path", p.as_str())])).collect();
+                photocraft_ui_egui::notices::post(&mut app, i18n::t("Could not open"), lines, true, None);
             }
             // Portable marker found but its data folder isn't writable (#228): say where settings went.
             if let Some(w) = &app_dirs::current().warning {
