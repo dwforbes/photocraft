@@ -14,8 +14,9 @@
 //! nothing else: not the user's files, not the network. A malicious file that exploits a C/C++
 //! decoder (libde265, dav1d, ImageIO) can then reach neither. `sips` needs macOS's image services
 //! and writes through the user's temporary folder, so its profile also allows those. The policy
-//! comes from `PHOTOCRAFT_TOOL_SANDBOX`: unset confines tools where the system can (other systems
-//! run them unconfined for now), `require` refuses to run a tool unconfined, `off` never confines.
+//! comes from `PHOTOCRAFT_TOOL_SANDBOX`: unset confines tools where the system can (Windows runs
+//! them unconfined for now), `require` refuses to run a tool unconfined, `off` never confines.
+//! On Linux the same rules come from Landlock and seccomp, or `bwrap` (see [`linux`]).
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -25,6 +26,9 @@ use std::time::Duration;
 use photocraft_codecs::{EncodeOptions, Image};
 
 use crate::IoError;
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 /// Why running a tool failed.
 #[derive(Debug)]
@@ -188,9 +192,29 @@ fn sandbox_profile(profile: Profile) -> String {
     p
 }
 
-/// Whether this system can confine tools: macOS with a working `sandbox-exec` (checked once; it
-/// fails, for one, when PhotoCraft itself runs in a sandbox).
+/// Whether this system can confine tools: macOS with a working `sandbox-exec` (it fails, for one,
+/// when PhotoCraft itself runs in a sandbox); Linux with Landlock or a working `bwrap`. Checked once.
 pub fn sandbox_available() -> bool {
+    sandbox_mechanism().is_some()
+}
+
+/// How tools are confined here: `"sandbox-exec"`, `"Landlock"`, `"bwrap"`, or `None`.
+pub fn sandbox_mechanism() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::mechanism().map(|m| match m {
+            linux::Mechanism::Landlock => "Landlock",
+            linux::Mechanism::Bubblewrap => "bwrap",
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        mac_sandbox_works().then_some("sandbox-exec")
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn mac_sandbox_works() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
         cfg!(target_os = "macos")
@@ -205,6 +229,7 @@ pub fn sandbox_available() -> bool {
     })
 }
 
+#[cfg(not(target_os = "linux"))]
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// The folders a confined tool may read besides the package managers' and the system's: its own
@@ -224,7 +249,7 @@ fn tool_dirs(program: &Path) -> (PathBuf, PathBuf) {
 /// A command running `program` in the private folder `job` with a minimal environment, confined
 /// to `job` by `profile` when `policy` and the system allow; and whether it is confined. The
 /// caller adds the tool's arguments.
-pub(crate) fn command(name: &str, program: &Path, job: &Path, profile: Profile, policy: SandboxPolicy) -> Result<(std::process::Command, bool), IoError> {
+pub(crate) fn command(name: &str, program: &Path, job: &Path, profile: Profile, policy: SandboxPolicy) -> Result<ToolCommand, IoError> {
     // Resolved, so the rules name the real file (Homebrew's `bin` holds symbolic links). Checked
     // here: inside the sandbox a missing program would only be `sandbox-exec`'s failure.
     let program = std::fs::canonicalize(program).map_err(|e| IoError::Unsupported(format!("couldn't run {name}: {e}")))?;
@@ -237,7 +262,8 @@ pub(crate) fn command(name: &str, program: &Path, job: &Path, profile: Profile, 
             return Err(IoError::Unsupported("helper tools must run in a sandbox (PHOTOCRAFT_TOOL_SANDBOX=require), which this system doesn't provide".into()));
         }
     };
-    let mut cmd = if confine { sandboxed(&program, &job, profile)? } else { std::process::Command::new(&program) };
+    let mut tool = if confine { sandboxed(&program, &job, profile)? } else { ToolCommand::plain(&program) };
+    let cmd = &mut tool.cmd;
     cmd.env_clear().env("PATH", "/usr/bin:/bin").env("TMPDIR", &job).current_dir(&job);
     if cfg!(windows)
         && let Some(root) = std::env::var_os("SystemRoot")
@@ -245,11 +271,40 @@ pub(crate) fn command(name: &str, program: &Path, job: &Path, profile: Profile, 
         // Windows programs need these to load their libraries.
         cmd.env("SystemRoot", root).env("PATH", std::env::var_os("PATH").unwrap_or_default());
     }
-    Ok((cmd, confine))
+    Ok(tool)
+}
+
+/// A tool ready to run: its command (the caller adds the tool's arguments), whether it is
+/// confined, and on Linux the Landlock rules it is started under.
+pub(crate) struct ToolCommand {
+    pub cmd: std::process::Command,
+    pub confined: bool,
+    #[cfg(target_os = "linux")]
+    landlock: Option<linux::Rules>,
+}
+
+impl ToolCommand {
+    fn plain(program: &Path) -> Self {
+        ToolCommand {
+            cmd: std::process::Command::new(program),
+            confined: false,
+            #[cfg(target_os = "linux")]
+            landlock: None,
+        }
+    }
+
+    /// [`run`] with this tool's confinement.
+    pub(crate) fn run(&mut self, name: &str, input: Option<Vec<u8>>, timeout: Duration, out_cap: u64) -> Result<Vec<u8>, RunError> {
+        #[cfg(target_os = "linux")]
+        if let Some(rules) = self.landlock.clone() {
+            return run_with(name, &mut self.cmd, input, timeout, out_cap, |c| linux::spawn_confined(c, &rules));
+        }
+        run(name, &mut self.cmd, input, timeout, out_cap)
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn sandboxed(program: &Path, job: &Path, profile: Profile) -> Result<std::process::Command, IoError> {
+fn sandboxed(program: &Path, job: &Path, profile: Profile) -> Result<ToolCommand, IoError> {
     let param = |k: &str, v: &Path| format!("{k}={}", v.display());
     let mut cmd = std::process::Command::new(SANDBOX_EXEC);
     cmd.arg("-p").arg(sandbox_profile(profile));
@@ -262,22 +317,48 @@ fn sandboxed(program: &Path, job: &Path, profile: Profile) -> Result<std::proces
         cmd.arg("-D").arg(param("USER_TEMP", &temp));
     }
     cmd.arg(program);
-    Ok(cmd)
+    Ok(ToolCommand { cmd, confined: true })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn sandboxed(program: &Path, _: &Path, _: Profile) -> Result<std::process::Command, IoError> {
-    Ok(std::process::Command::new(program))
+/// Linux: `bwrap` around the program, or the program as is with Landlock rules applied when it
+/// starts (`ToolCommand::run`). `sips` doesn't exist here, so both profiles get the same rules.
+#[cfg(target_os = "linux")]
+fn sandboxed(program: &Path, job: &Path, _: Profile) -> Result<ToolCommand, IoError> {
+    let rules = linux::Rules::new(program, job);
+    match linux::mechanism() {
+        Some(linux::Mechanism::Bubblewrap) => {
+            let cmd = linux::bwrap_command(program, &rules).ok_or_else(|| IoError::Unsupported("bwrap disappeared".into()))?;
+            Ok(ToolCommand { cmd, confined: true, landlock: None })
+        }
+        _ => Ok(ToolCommand { cmd: std::process::Command::new(program), confined: true, landlock: Some(rules) }),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn sandboxed(program: &Path, _: &Path, _: Profile) -> Result<ToolCommand, IoError> {
+    Ok(ToolCommand::plain(program))
 }
 
 /// Runs `cmd` (the tool `name`, for messages), writing `input` (if any) to its standard input, and
 /// returns its standard output (at most `out_cap` bytes: more is an error). Failing, or running
 /// past `timeout`, is an error; the program is then killed and reaped.
 pub(crate) fn run(name: &str, cmd: &mut std::process::Command, input: Option<Vec<u8>>, timeout: Duration, out_cap: u64) -> Result<Vec<u8>, RunError> {
+    run_with(name, cmd, input, timeout, out_cap, std::process::Command::spawn)
+}
+
+/// [`run`], starting the process with `spawn`.
+pub(crate) fn run_with(
+    name: &str,
+    cmd: &mut std::process::Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    out_cap: u64,
+    spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Child>,
+) -> Result<Vec<u8>, RunError> {
     use std::io::{Read, Write};
     use std::process::Stdio;
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
-    let mut child = cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| RunError::Spawn(format!("couldn't run {name}: {e}")))?;
+    let mut child = spawn(cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped())).map_err(|e| RunError::Spawn(format!("couldn't run {name}: {e}")))?;
     // The input is written, and both outputs read, on their own threads, so neither side ever
     // blocks on a full pipe. The writer drops the input (freeing it) and closes the pipe (the end
     // of input for the program) as soon as it is written; a program that exits early just ends the
@@ -425,9 +506,9 @@ mod tests {
     /// Runs `program args` for a job in `job` under `policy`; `Ok(stdout)` when it succeeds.
     #[cfg(unix)]
     fn confined(program: &str, args: &[&std::ffi::OsStr], job: &TempDir, policy: SandboxPolicy) -> Result<Vec<u8>, RunError> {
-        let (mut cmd, _) = command("test", Path::new(program), &job.path, Profile::Tool, policy).map_err(|e| RunError::Spawn(e.to_string()))?;
-        cmd.args(args);
-        run("test", &mut cmd, None, Duration::from_secs(20), 1 << 20)
+        let mut tool = command("test", Path::new(program), &job.path, Profile::Tool, policy).map_err(|e| RunError::Spawn(e.to_string()))?;
+        tool.cmd.args(args);
+        tool.run("test", None, Duration::from_secs(20), 1 << 20)
     }
 
     /// The sandbox is what stops each of these: with it off, the same command succeeds.
@@ -462,11 +543,11 @@ mod tests {
         let job = TempDir::new().unwrap();
         let probe = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").join(format!("sandbox-probe-{}", std::process::id()));
         std::fs::write(&probe, b"outside").unwrap();
-        let (mut cmd, confined) = command("test", Path::new("/bin/cat"), &job.path, Profile::SystemImaging, SandboxPolicy::Auto).unwrap();
-        cmd.arg(&probe);
-        let r = run("test", &mut cmd, None, Duration::from_secs(20), 1 << 20);
+        let mut tool = command("test", Path::new("/bin/cat"), &job.path, Profile::SystemImaging, SandboxPolicy::Auto).unwrap();
+        tool.cmd.arg(&probe);
+        let r = tool.run("test", None, Duration::from_secs(20), 1 << 20);
         let _ = std::fs::remove_file(&probe);
-        assert!(confined && r.is_err(), "{r:?}");
+        assert!(tool.confined && r.is_err(), "{r:?}");
     }
 
     #[cfg(unix)]

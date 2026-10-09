@@ -68,7 +68,8 @@ jobs:
 
       # libjxl-tools and libheif: the JPEG XL, HEIC and AVIF tests through libjxl's `cjxl` and
       # libheif's `heif-enc`/`heif-convert` (crates/io/tests/jxl.rs, heif_tool.rs) run here;
-      # elsewhere they pass with a note when the tools aren't installed.
+      # elsewhere they pass with a note when the tools aren't installed. bubblewrap: the helper
+      # sandbox's fallback is tested here too (crates/io/src/external/linux.rs).
       - name: Install Linux system dependencies (egui/winit/rfd, cjxl, libheif)
         if: runner.os == 'Linux'
         run: |
@@ -76,7 +77,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
             libgl1-mesa-dev libgtk-3-dev libjxl-tools \
-            libheif-examples libheif-plugin-x265 libheif-plugin-libde265 libheif-plugin-aomenc libheif-plugin-dav1d
+            libheif-examples libheif-plugin-x265 libheif-plugin-libde265 libheif-plugin-aomenc libheif-plugin-dav1d \
+            bubblewrap
 
       - uses: dtolnay/rust-toolchain@stable
         with:

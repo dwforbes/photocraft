@@ -54,6 +54,20 @@ use photocraft_psd::{PsdError, PsdFile};
 
 pub use adjust_map::ADJUSTMENT_KEYS;
 pub use flat::{document_to_image, import_tiff_page};
+
+/// How helper tools (`cjxl`, `heif-enc`, `heif-dec`, `sips`) are confined on this system:
+/// `"sandbox-exec"` (macOS), `"Landlock"` or `"bwrap"` (Linux), or `None` (they run unconfined, or
+/// `PHOTOCRAFT_TOOL_SANDBOX=off`). See `external`.
+pub fn tool_sandbox() -> Option<&'static str> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        (external::sandbox_policy() != external::SandboxPolicy::Off).then(external::sandbox_mechanism).flatten()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
 pub use psd_export::{PsdExportOptions, document_to_psd, document_to_psd_with};
 pub use psd_import::{psd_to_document, psd_to_document_with};
 

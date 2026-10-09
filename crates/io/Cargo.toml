@@ -34,6 +34,13 @@ thiserror = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 
+# Linux confinement of helper tools (see `src/external/linux.rs`): Landlock and seccomp through safe
+# APIs; libc only for the syscall and address-family numbers the seccomp filter names.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "=0.4.7"
+seccompiler = "=0.5.0"
+libc = "0.2"
+
 [dev-dependencies]
 photocraft-psd = { workspace = true, features = ["testgen"] }
 photocraft-raw = { workspace = true, features = ["testgen"] }

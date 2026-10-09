@@ -72,9 +72,10 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
                     assert_eq!(back.dimensions(), img.dimensions(), "{what}");
                     assert_eq!(back.layout().has_alpha(), alpha, "{what}");
                     assert!(notes.iter().any(|n| n.contains(dec.name())), "{notes:?}");
-                    if cfg!(target_os = "macos") {
-                        assert!(notes.iter().any(|n| n.ends_with("(sandboxed)")), "{notes:?}");
-                    }
+                    // Confined wherever the system offers a sandbox (macOS always; Linux with Landlock or bwrap).
+                    let sandboxed = notes.iter().any(|n| n.ends_with("(sandboxed)"));
+                    assert_eq!(sandboxed, photocraft_io::tool_sandbox().is_some(), "{notes:?}");
+                    assert!(photocraft_io::tool_sandbox().is_some() || !cfg!(target_os = "macos"));
                     let d = mean_diff(&img, &back);
                     assert!(d < 0.02, "{what}: mean diff {d}");
                 }

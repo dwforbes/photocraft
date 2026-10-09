@@ -26,7 +26,7 @@ use photocraft_codecs::{EncodeOptions, Image};
 
 use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::external::{self, Profile, RunError, TempDir, run};
+use crate::external::{self, Profile, RunError, TempDir};
 
 /// libjxl's `cjxl` as found on this system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,10 +118,9 @@ fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Du
     // The job folder stays empty: it is the sandbox's only writable place and the working folder,
     // where versions before 0.12 would have read a file named `-` instead of standard input.
     let job = TempDir::new().map_err(|e| RunError::Failed(e.to_string()))?;
-    let (mut cmd, _) =
-        external::command("cjxl", &tool.path, &job.path, Profile::Tool, external::sandbox_policy()).map_err(|e| RunError::Spawn(e.to_string()))?;
-    cmd.args(["-", "-"]).args(arguments(opts));
-    let bytes = run("cjxl", &mut cmd, Some(png), timeout, out_cap)?;
+    let mut cmd = external::command("cjxl", &tool.path, &job.path, Profile::Tool, external::sandbox_policy()).map_err(|e| RunError::Spawn(e.to_string()))?;
+    cmd.cmd.args(["-", "-"]).args(arguments(opts));
+    let bytes = cmd.run("cjxl", Some(png), timeout, out_cap)?;
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(RunError::Failed("cjxl wrote something that isn't a JPEG XL file".into()));
     }
@@ -135,9 +134,9 @@ fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::
     let input = dir.write("in.png", &png)?;
     drop(png);
     let output = dir.path.join("out.jxl");
-    let (mut cmd, _) = external::command("cjxl", &tool.path, &dir.path, Profile::Tool, external::sandbox_policy())?;
-    cmd.arg(&input).arg(&output).args(arguments(opts));
-    run("cjxl", &mut cmd, None, timeout, 1 << 20)?;
+    let mut cmd = external::command("cjxl", &tool.path, &dir.path, Profile::Tool, external::sandbox_policy())?;
+    cmd.cmd.arg(&input).arg(&output).args(arguments(opts));
+    cmd.run("cjxl", None, timeout, 1 << 20)?;
     let bytes = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("cjxl didn't write the JPEG XL file: {e}")))?;
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(IoError::Unsupported("cjxl wrote something that isn't a JPEG XL file".into()));
