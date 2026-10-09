@@ -172,7 +172,13 @@ fn clipboard_press(e: &egui::Event, mods: Modifiers, is_windows: bool) -> Option
 /// egui-winit turns ⌘C / ⌘X / ⌘V into `Event::Copy` / `Cut` / `Paste` and drops the key press, and
 /// drops ⌘V entirely when the clipboard holds no text (an image). Outside text fields, give the
 /// pixel commands their key presses back: Copy/Cut/Paste become ⌘C/⌘X/⌘V presses (with ⇧/⌥ as
-/// held, so ⇧⌘C is Copy Merged), and a ⌘V release without a paste event becomes a ⌘V press.
+/// held, so ⇧⌘C is Copy Merged), and a keyboard ⌘V release with no ⌘V press since becomes a ⌘V
+/// press.
+///
+/// Every ⌘V press counts, including the macOS menu bar's: it takes the key-down as a key
+/// equivalent and hands egui a press and release of its own (with no physical key), while the
+/// keyboard's key-up still arrives later. Only that real release may stand in for a missing press;
+/// counting the menu's release, or not counting its press, pasted two or three times.
 ///
 /// Ctrl+Insert copies and Shift+Insert pastes: egui-winit maps them on Windows (a Shift+Insert
 /// release without a paste event pastes the image, like ⌘V), and we map them here on Linux.
@@ -212,7 +218,15 @@ pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInpu
             out.push(press(key, held));
             continue;
         }
-        if let egui::Event::Key { key, pressed: false, modifiers, .. } = &e
+        // A ⌘V press from anywhere else (the menu bar, a remapped key) has pasted already.
+        if let egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } = &e
+            && modifiers.command
+        {
+            ctx.data_mut(|d| d.insert_temp(seen, true));
+        }
+        // Only the keyboard's own release stands in for a dropped press; a synthetic one (no
+        // physical key) follows a press it was sent with.
+        if let egui::Event::Key { key, pressed: false, modifiers, physical_key: Some(_), .. } = &e
             && let Some(held) = match key {
                 Key::V if modifiers.command => Some(*modifiers),
                 Key::Insert if cfg!(target_os = "windows") && modifiers.shift && !modifiers.ctrl => Some(Modifiers::COMMAND),
@@ -450,7 +464,7 @@ mod tests {
         clipboard_keys(&ctx, false, &mut r);
         assert_eq!(keys(&r), vec![(Key::C, true, true), (Key::X, true, true)]);
         // A text paste becomes ⌘V; its key release then adds nothing.
-        let up = egui::Event::Key { key: Key::V, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::COMMAND };
+        let up = egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND };
         let mut r = raw(vec![egui::Event::Paste("x".into()), up.clone()], Modifiers::COMMAND);
         clipboard_keys(&ctx, false, &mut r);
         assert_eq!(keys(&r), vec![(Key::V, true, false), (Key::V, false, false)]);
@@ -462,6 +476,35 @@ mod tests {
         let mut r = raw(vec![egui::Event::Paste("x".into())], Modifiers::COMMAND);
         clipboard_keys(&ctx, true, &mut r);
         assert!(matches!(r.events.as_slice(), [_, egui::Event::Paste(_)]));
+    }
+
+    /// With the macOS menu bar, one ⌘V made three pasted layers. The menu takes the key-down
+    /// and sends its own press and release; the keyboard's key-up comes in a later frame. Exactly
+    /// one ⌘V press must reach the shortcuts, whether ⌘ is let go before or after V.
+    #[test]
+    fn a_menu_bar_paste_pastes_once() {
+        let chord = crate::native_menu::Chord::parse("Cmd+V").unwrap();
+        let presses = |r: &egui::RawInput| r.events.iter().filter(|e| matches!(e, egui::Event::Key { key: Key::V, pressed: true, .. })).count();
+        for cmd_still_held in [true, false] {
+            let ctx = egui::Context::default();
+            // Frame 1: the menu bar's key equivalent, as `NativeMenu::raw_input` adds it.
+            let mut r = egui::RawInput { events: [chord.key_event(true), chord.key_event(false)].into_iter().flatten().collect(), ..Default::default() };
+            clipboard_keys(&ctx, false, &mut r);
+            let mut total = presses(&r);
+            // A later frame: the keyboard's key-up of V.
+            let held = if cmd_still_held { Modifiers::COMMAND } else { Modifiers::NONE };
+            let up = egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: held };
+            let mut r = egui::RawInput { events: vec![egui::Event::ModifiersChanged(held), up], ..Default::default() };
+            clipboard_keys(&ctx, false, &mut r);
+            total += presses(&r);
+            assert_eq!(total, 1, "⌘ still held when V came up: {cmd_still_held}");
+        }
+        // The image paste that the release rule exists for still works afterwards.
+        let ctx = egui::Context::default();
+        let up = egui::Event::Key { key: Key::V, physical_key: Some(Key::V), pressed: false, repeat: false, modifiers: Modifiers::COMMAND };
+        let mut r = egui::RawInput { events: vec![egui::Event::ModifiersChanged(Modifiers::COMMAND), up], ..Default::default() };
+        clipboard_keys(&ctx, false, &mut r);
+        assert_eq!(presses(&r), 1);
     }
 
     /// #530: egui-winit sends Cut for Shift+Delete on Windows; on the canvas it opens Fill.

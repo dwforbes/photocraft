@@ -333,7 +333,10 @@ impl Chord {
             k => Key::from_name(k)?,
         };
         let modifiers = Modifiers { alt: self.alt, ctrl: self.ctrl, shift: self.shift, mac_cmd: self.cmd, command: self.cmd };
-        Some(egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers })
+        // No physical key: this press didn't come from the window's keyboard. The real key-up
+        // still does (AppKit takes only the key-down for a key equivalent), and
+        // [`crate::shortcuts::clipboard_keys`] tells the two apart by this, so one ⌘V pastes once.
+        Some(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers })
     }
 }
 
