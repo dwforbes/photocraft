@@ -337,6 +337,57 @@ fn live_stroke_matches_the_committed_stroke() {
 }
 
 #[test]
+fn stroke_coordinate_validation_keeps_the_existing_bounds() {
+    let edges = [StrokePoint::new(-MAX_COORD, MAX_COORD, 1.0), StrokePoint::new(MAX_COORD, -MAX_COORD, 1.0)];
+    assert!(check_coords(&edges, "paint.stroke").is_ok());
+    assert!(check_coords(&[], "paint.stroke").is_ok(), "an empty live update is allowed");
+    for (x, y) in [(MAX_COORD + 1.0, 0.0), (0.0, -MAX_COORD - 1.0), (f64::NAN, 0.0), (0.0, f64::INFINITY)] {
+        assert!(check_coords(&[StrokePoint::new(x, y, 1.0)], "paint.stroke").is_err());
+    }
+    // The command parser still rejects empty strokes and shares the same inclusive boundary.
+    assert!(parse_points(&json!({"points": []}), "paint.stroke").is_err());
+    assert!(parse_points(&json!({"points": [[MAX_COORD, -MAX_COORD]]}), "paint.stroke").is_ok());
+}
+
+#[test]
+fn live_brush_and_pencil_reject_invalid_batches_without_changing_the_preview() {
+    for depth in [8, 16, 32] {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 32, "height": 32, "depth": depth, "background": "transparent"})).unwrap();
+        let st = s.active().unwrap();
+        let (doc, revision, history) = (st.doc.clone(), st.revision, st.history.past_len());
+        let id = st.active_layer.unwrap();
+        for (cmd, erase) in [("paint.stroke", false), ("paint.stroke", true), ("paint.pencil", false)] {
+            let p = json!({"points": [[8, 16]], "size": 4, "erase": erase, "seed": 7});
+            let mut live = LiveStroke::begin_with(&s, cmd, &p).unwrap();
+            let mut control = LiveStroke::begin_with(&s, cmd, &p).unwrap();
+            // NaN first: on an unguarded renderer this fails without starting the enormous segment.
+            for (x, y) in [(f64::NAN, 16.0), (16.0, f64::NAN), (f64::INFINITY, 16.0), (16.0, f64::NEG_INFINITY), (1e300, 16.0), (16.0, -MAX_COORD - 1.0)] {
+                let shown = live.doc.clone();
+                let bounds = live.bounds();
+                let batch = [StrokePoint::new(12.0, 18.0, 1.0), StrokePoint::new(x, y, 1.0)];
+                let err = live.push(&batch).unwrap_err();
+                assert!(matches!(err, EngineError::BadParams { cmd: ref actual, ref msg }
+                    if actual == cmd && msg.contains("point coordinates must be finite")));
+                assert!(std::sync::Arc::ptr_eq(&shown, &live.doc), "reject the whole batch before touching the preview");
+                assert_eq!(live.bounds(), bounds);
+            }
+            // A rejected batch must not advance the renderer; resuming is identical to never
+            // receiving it. Ordinary off-canvas points remain valid too.
+            let next = [StrokePoint::new(-4.0, 16.0, 1.0), StrokePoint::new(24.0, 16.0, 1.0)];
+            assert_eq!(live.push(&next).unwrap(), control.push(&next).unwrap());
+            assert_eq!(live.bounds(), control.bounds());
+            let (got, want) = (live.doc.layer(id).unwrap().surface().unwrap(), control.doc.layer(id).unwrap().surface().unwrap());
+            assert!(same_pixels(got, want, live.bounds()));
+            assert_eq!(got.content_bounds(), want.content_bounds());
+        }
+        let st = s.active().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&doc, &st.doc));
+        assert_eq!((st.revision, st.history.past_len()), (revision, history));
+    }
+}
+
+#[test]
 fn live_pencil_matches_the_committed_pencil_and_auto_erases() {
     let mut s = session(80, 40);
     s.execute("tools.setColors", json!({"foreground": "#000000", "background": "#ffffff"})).unwrap();
@@ -540,4 +591,51 @@ fn coalesced_set_brush_calls_journal_once_per_gesture() {
         t.execute(id, p.clone()).unwrap();
     }
     assert_eq!(t.tools.brush, s.tools.brush);
+}
+
+/// A Scatter amount beyond the 1000 % maximum (the issue's 1e38, just above the maximum, or one
+/// that only fits as infinity) is rejected naming the value, before the session brush changes, by
+/// `tools.setBrush` and by a stroke's own brush patch; the maximum itself and an ordinary amount
+/// above 100 % still paint (#977).
+#[test]
+fn out_of_range_scatter_is_rejected_and_the_maximum_still_paints() {
+    let new = || {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width": 32, "height": 32})).unwrap();
+        s.execute("layer.new.layer", json!({})).unwrap();
+        s
+    };
+    let scatter = |j: f64| json!({"scattering": {"enabled": true, "bothAxes": true, "scatter": {"jitter": j}}});
+    let dual = |j: f64| json!({"dualBrush": {"enabled": true, "bothAxes": true, "size": 6, "scatter": j}});
+    let stroke = json!({"points": [[10, 10]]});
+    for (j, shown) in [(1e38, "1e38"), (10.01, "10.01"), (1e39, "inf"), (-1.0, "-1.0")] {
+        for (patch, what) in [(scatter(j), "scatter"), (dual(j), "dual brush scatter")] {
+            let mut s = new();
+            let before = s.tools.brush.clone();
+            let err = s.execute("tools.setBrush", json!({ "brush": patch.clone() })).unwrap_err();
+            let msg = err.to_string();
+            assert!(matches!(err, EngineError::BadParams { .. }) && msg.contains(what) && msg.contains(shown), "{j}: {msg}");
+            assert_eq!(s.tools.brush, before, "a rejected scatter must not change the session brush");
+            let (doc, revision) = (s.active().unwrap().doc.clone(), s.active().unwrap().revision);
+            let err = paint_stroke(&mut s, &json!({"points": [[10, 10]], "brush": patch})).unwrap_err();
+            assert!(matches!(err, EngineError::BadParams { .. }) && err.to_string().contains(shown), "{j}: {err}");
+            assert!(std::sync::Arc::ptr_eq(&doc, &s.active().unwrap().doc) && s.active().unwrap().revision == revision);
+        }
+    }
+    // The issue's repro, end to end: a stroke after the rejected update still paints normally.
+    let mut s = new();
+    assert!(s.execute("tools.setBrush", json!({ "brush": scatter(1e38) })).is_err());
+    assert!(s.execute("paint.stroke", stroke.clone()).is_ok());
+    // The maximum (1000 %) is accepted and paints a finite, well-formed dab.
+    for patch in [scatter(10.0), dual(10.0)] {
+        let mut s = new();
+        s.execute("tools.setBrush", json!({ "brush": patch })).unwrap();
+        let r = s.execute("paint.stroke", stroke.clone()).unwrap();
+        let d: Vec<i64> = r["damage"].as_array().unwrap().iter().map(|v| v.as_i64().unwrap()).collect();
+        assert!(d[0].abs() < 1000 && d[1].abs() < 1000 && d[2] > 0 && d[3] > 0, "{r}");
+    }
+    // Control: 200 % scatter paints where it did before the cap.
+    let mut s = new();
+    s.execute("tools.setBrush", json!({ "brush": scatter(2.0) })).unwrap();
+    assert_eq!(s.execute("paint.stroke", stroke).unwrap(), json!({"damage": [17, 14, 23, 23]}));
 }

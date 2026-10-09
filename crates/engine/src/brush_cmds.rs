@@ -48,7 +48,7 @@ fn always(_: &Session) -> std::result::Result<(), String> {
 }
 
 /// Largest stroke coordinate accepted (a few times the largest document side, 300 000 px).
-const MAX_COORD: f64 = 1_000_000.0;
+pub(crate) const MAX_COORD: f64 = 1_000_000.0;
 
 /// Parse `points`: arrays `[x, y, pressure?, tiltX?, tiltY?, rotation?, timeMs?, wheel?]` or
 /// objects `{"x":…, "y":…, "pressure":…, "tiltX":…, …, "time":…}`.
@@ -74,11 +74,17 @@ pub fn parse_points(p: &Value, cmd: &str) -> Result<Vec<StrokePoint>> {
     if pts.is_empty() {
         return Err(bad(cmd, "`points` is empty"));
     }
-    // A stroke runs dab by dab along its length: an absurd coordinate would mean billions of dabs.
+    check_coords(&pts, cmd)?;
+    Ok(pts)
+}
+
+/// A stroke runs dab by dab along its length: an absurd coordinate would mean billions of dabs.
+/// Shared by the painting and the retouch tools' `points` (#976).
+pub(crate) fn check_coords(pts: &[StrokePoint], cmd: &str) -> Result<()> {
     if pts.iter().any(|q| !(q.x.abs() <= MAX_COORD && q.y.abs() <= MAX_COORD)) {
         return Err(bad(cmd, format!("point coordinates must be finite and within ±{MAX_COORD}")));
     }
-    Ok(pts)
+    Ok(())
 }
 
 /// Deep-merge `patch` into `base` (objects merge key by key; anything else replaces).
@@ -137,13 +143,27 @@ pub fn merge_brush(base: &BrushSettings, patch: &Value, cmd: &str) -> Result<Bru
     Ok(out)
 }
 
-pub(crate) fn validate_brush_size(brush: &BrushSettings, cmd: &str) -> Result<()> {
+/// Rejects brush sizes and Scatter amounts outside their documented ranges, before a brush is
+/// stored or painted with.
+pub(crate) fn validate_brush(brush: &BrushSettings, cmd: &str) -> Result<()> {
     let max = photocraft_paint::MAX_BRUSH_SIZE;
     if !brush.size.is_finite() || brush.size > max {
         return Err(bad(cmd, format!("brush size must be finite and at most {max} px")));
     }
     if brush.dual_brush.enabled && (!brush.dual_brush.size.is_finite() || brush.dual_brush.size > max) {
         return Err(bad(cmd, format!("dual brush size must be finite and at most {max} px")));
+    }
+    // Scatter may exceed 1 (100 %) but not the 1000 % maximum: a huge amount pushed dab centres to
+    // infinity (#977). `{:?}` keeps 1e38 short and shows infinity as `inf`.
+    let scatter_max = photocraft_paint::MAX_SCATTER;
+    let in_range = |v: f32| (0.0..=scatter_max).contains(&v);
+    let sc = brush.scattering.scatter.jitter;
+    if brush.scattering.enabled && !in_range(sc) {
+        return Err(bad(cmd, format!("scatter amount {sc:?} is out of range: it must be between 0 and {scatter_max} (1000 %)")));
+    }
+    let ds = brush.dual_brush.scatter;
+    if brush.dual_brush.enabled && !in_range(ds) {
+        return Err(bad(cmd, format!("dual brush scatter amount {ds:?} is out of range: it must be between 0 and {scatter_max} (1000 %)")));
     }
     Ok(())
 }
@@ -187,7 +207,7 @@ pub fn resolve_brush(s: &Session, p: &Value, cmd: &str) -> Result<BrushSettings>
         Some(v) => v,
         None => photocraft_paint::rng::seed_from_bytes(p.get("points").map(|v| v.to_string()).unwrap_or_default().as_bytes()),
     };
-    validate_brush_size(&b, cmd)?;
+    validate_brush(&b, cmd)?;
     Ok(b)
 }
 
@@ -227,7 +247,7 @@ fn erase_locked(brush: &mut BrushSettings, lock: bool, bg: [f32; 4]) {
 fn stroke_with(s: &mut Session, p: &Value, label: &str, brush: BrushSettings, pts: Vec<StrokePoint>, auto_erase: bool) -> Result<Value> {
     let bg = s.tools.background;
     let fg = brush.color;
-    let symmetry = s.active().and_then(|st| st.symmetry_path.clone());
+    let symmetry = s.active().and_then(|st| st.symmetry.clone());
     let (id, brush, zoom) = stroke_target(s, p, brush)?;
     let dmg = s.edit(label, |doc, _| {
         let sel = doc.selection.clone();
@@ -238,18 +258,25 @@ fn stroke_with(s: &mut Session, p: &Value, label: &str, brush: BrushSettings, pt
             apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
         }
         let damage = if let Some(axis) = &symmetry {
-            let reflected = axis.reflect_points(&pts);
-            if crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, &reflected) {
+            let reflected = axis.reflected_passes(&pts);
+            let copies: Vec<_> = reflected
+                .iter()
+                .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
+                .map(|p| {
+                    let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                    renderer.push(p);
+                    renderer.finish();
+                    renderer
+                })
+                .collect();
+            if copies.is_empty() {
+                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+            } else {
                 let pre = surf.clone();
                 let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
                 original.push(&pts);
                 original.finish();
-                let mut mirror = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-                mirror.push(&reflected);
-                mirror.finish();
-                original.composite_union(&mirror, &pre, surf, sel.as_ref(), lock)
-            } else {
-                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+                original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
             }
         } else {
             render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
@@ -310,9 +337,13 @@ pub struct LiveStroke {
     pub doc: std::sync::Arc<photocraft_doc::Document>,
     /// Jitter seed to pass to `paint.stroke`.
     pub seed: u64,
+    cmd: String,
     renderer: StrokeRenderer,
-    mirror: Option<(crate::symmetry_cmds::SymmetryAxis, StrokeRenderer)>,
-    mirror_distinct: bool,
+    symmetry: Option<crate::symmetry_cmds::PaintingSymmetry>,
+    mirrors: Vec<StrokeRenderer>,
+    mirror_distinct: Vec<bool>,
+    /// Restore passes separately; their union may span an otherwise untouched document.
+    symmetry_regions: Vec<Rect>,
     pre: Surface,
     sel: Option<Surface>,
     lock: bool,
@@ -349,10 +380,26 @@ impl LiveStroke {
             apply_auto_erase(&mut brush, surf, pts.first(), fg, s.tools.background);
         }
         let renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-        let mirror = s.active().and_then(|st| st.symmetry_path.clone()).map(|axis| (axis, StrokeRenderer::new(&brush, Some(surf.format()), zoom)));
+        let symmetry = s.active().and_then(|st| st.symmetry.clone());
+        let mirrors: Vec<_> = (0..symmetry.as_ref().map_or(0, |s| s.mirror_count())).map(|_| StrokeRenderer::new(&brush, Some(surf.format()), zoom)).collect();
+        let mirror_distinct = vec![false; mirrors.len()];
         let pre = surf.clone();
-        let mut live =
-            Self { doc: std::sync::Arc::new(doc), seed, renderer, mirror, mirror_distinct: false, pre, sel, lock, layer, params: p.clone(), tail: Rect::EMPTY };
+        let mut live = Self {
+            doc: std::sync::Arc::new(doc),
+            seed,
+            cmd: cmd.into(),
+            renderer,
+            symmetry,
+            mirrors,
+            mirror_distinct,
+            symmetry_regions: Vec::new(),
+            pre,
+            sel,
+            lock,
+            layer,
+            params: p.clone(),
+            tail: Rect::EMPTY,
+        };
         live.push(&pts)?;
         Ok(live)
     }
@@ -360,34 +407,50 @@ impl LiveStroke {
     /// Everything the stroke has touched so far.
     pub fn bounds(&self) -> Rect {
         let bounds = self.renderer.bounds().union(&self.tail);
-        if self.mirror_distinct { self.mirror.as_ref().map_or(bounds, |(_, renderer)| bounds.union(&renderer.bounds())) } else { bounds }
+        self.mirrors.iter().zip(&self.mirror_distinct).filter(|(_, distinct)| **distinct).fold(bounds, |b, (r, _)| b.union(&r.bounds()))
     }
 
     /// Render more points; returns the rectangle that changed. The doc shows the stroke as
     /// committing it now would: with smoothing, the brush lags behind the pointer and catches up
     /// when the stroke ends, so that catch-up tail is drawn too (and redrawn on every step), and
     /// nothing new appears on release.
+    /// Invalid coordinates reject the whole batch without changing the preview.
     pub fn push(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
+        check_coords(pts, &self.cmd)?;
         self.renderer.push(pts);
-        if let Some((axis, mirror)) = &mut self.mirror {
-            let reflected = axis.reflect_points(pts);
-            self.mirror_distinct |= crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(pts, &reflected);
-            mirror.push(&reflected);
+        if let Some(symmetry) = &self.symmetry {
+            for ((mirror, distinct), reflected) in self.mirrors.iter_mut().zip(&mut self.mirror_distinct).zip(symmetry.reflected_passes(pts)) {
+                *distinct |= crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(pts, &reflected);
+                mirror.push(&reflected);
+            }
         }
         let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
-        if let (true, Some((_, mirror))) = (self.mirror_distinct, &mut self.mirror) {
-            // Preview the finished strokes through one coverage buffer. Shared axis pixels
-            // therefore receive the brush opacity once, exactly like the final commit.
+        if self.mirror_distinct.iter().any(|d| *d) {
+            // Merge every finished pass once, both here and on commit, including shared axes.
             let old = self.tail;
             let mut original_preview = self.renderer.clone();
             original_preview.finish();
-            let mut mirror_preview = mirror.clone();
-            mirror_preview.finish();
-            let bounds = original_preview.bounds().union(&mirror_preview.bounds()).union(&old);
-            if !bounds.is_empty() {
-                surf.write_region(bounds, &self.pre.read_region(bounds));
+            let copies: Vec<_> = self
+                .mirrors
+                .iter()
+                .zip(&self.mirror_distinct)
+                .filter(|(_, d)| **d)
+                .map(|(r, _)| {
+                    let mut r = r.clone();
+                    r.finish();
+                    r
+                })
+                .collect();
+            let bounds = copies.iter().fold(original_preview.bounds().union(&old), |b, r| b.union(&r.bounds()));
+            if self.symmetry_regions.is_empty() && !old.is_empty() {
+                surf.write_region(old, &self.pre.read_region(old));
             }
-            let damage = original_preview.composite_union(&mirror_preview, &self.pre, surf, self.sel.as_ref(), self.lock);
+            for region in &self.symmetry_regions {
+                surf.write_region(*region, &self.pre.read_region(*region));
+            }
+            self.symmetry_regions =
+                std::iter::once(original_preview.bounds()).chain(copies.iter().map(StrokeRenderer::bounds)).filter(|r| !r.is_empty()).collect();
+            let damage = original_preview.composite_union_many(&copies, &self.pre, surf, self.sel.as_ref(), self.lock);
             self.tail = bounds;
             return Ok(damage.union(&bounds));
         }
@@ -632,11 +695,14 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(inner) = o.remove("brush") {
             let tmp = merge_brush(&b, &inner, cmd)?;
+            // Before the second merge: a non-finite value would serialise as `null` there and be
+            // reported as a type error instead of naming the value (#977).
+            validate_brush(&tmp, cmd)?;
             b = tmp;
         }
     }
     b = merge_brush(&b, &patch, cmd)?;
-    validate_brush_size(&b, cmd)?;
+    validate_brush(&b, cmd)?;
     let before = std::mem::replace(&mut s.tools.brush, b);
     // A coalesced gesture (one slider drag) journals as one call: remember the brush it started from.
     let key = p.get("coalesce").and_then(Value::as_str).filter(|_| p.get("preset").is_none() && p.get("reset").is_none());

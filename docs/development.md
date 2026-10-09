@@ -5,6 +5,29 @@
 - Rust stable (1.95+). Add the web target with `rustup target add wasm32-unknown-unknown`.
 - macOS, Windows or Linux. Linux needs `libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libgtk-3-dev`.
 
+### Windows source builds
+
+Use the Rust MSVC toolchain and install Visual Studio or Microsoft C++ Build Tools with the
+**Desktop development with C++** workload. Follow Microsoft's
+[Rust setup guide](https://learn.microsoft.com/en-us/windows/dev-environment/rust/setup),
+then open a new terminal and check `cargo --version` and `rustc --version`.
+
+On Windows 11, Smart App Control can block Cargo, rustc or executables generated during a build.
+If a build reports `An Application Control policy has blocked this file. (os error 4551)`
+([#1585](https://github.com/storytold/photocraft/issues/1585)), check:
+
+- **Windows Security → App & browser control → Smart App Control settings** for its status.
+- **Event Viewer → Applications and Services Logs → Microsoft → Windows → CodeIntegrity →
+  Operational** for the blocked executable and policy, especially on managed machines.
+
+This error indicates an application-control restriction; moving `CARGO_TARGET_DIR` or
+reinstalling Rust does not establish that the blocked executable is trusted. See Microsoft's
+[Smart App Control FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions)
+for the available controls; there is no per-app exception. On a managed device, ask your
+administrator about an approved development environment. If you only want to run PhotoCraft,
+use the [packaged Windows release](https://github.com/storytold/photocraft/releases) to avoid
+building locally; the downloaded app is still subject to Windows application-control checks.
+
 ## Build and run
 
 ```sh
@@ -21,7 +44,7 @@ Image code is slow at `opt-level 0`, so the workspace profile builds dependencie
 
 ## Fonts (craft-fonts)
 
-Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts). The rules are in [`craftrules/standards/fonts.md`](../../craftrules/standards/fonts.md) ([on GitHub](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)).
+Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts). The rules are in `craftrules/standards/fonts.md` in a sibling `craftrules` checkout (see below); that repository is not public, so outside contributors can ask a maintainer for the rules that apply to their change.
 
 craft-fonts is an **optional build input**, never a Cargo dependency:
 
@@ -35,7 +58,7 @@ CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo test --workspace     # runs the Japa
 - `crates/text/build.rs` reads `$CRAFT_FONTS_DIR/fonts/manifest.txt` and embeds the fonts as `photocraft_text::CRAFT_FONTS` (`crates/text/src/craft_fonts.rs`). Unset, `CRAFT_FONTS` is empty and the build is unchanged. A bad path is a build warning, or an error with `CRAFT_FONTS_REQUIRED=1` (release builds set both).
 - **UI:** the Japanese fonts (BIZ UDPGothic Regular first) are the first Japanese fallback in the lazy CJK loader (`crates/ui-egui/src/cjk_fonts.rs`), ahead of the system Japanese fonts and in the same locale script order, appended last to every egui family with the usual baseline alignment.
 - **Type tool:** the text engine registers them in `FontDb::new` (so also with no system fonts) and puts them first in the Japanese slot of the locale-ordered fallback list: BIZ UDPGothic for sans runs, Shippori Mincho / BIZ UDMincho for serif runs.
-- **Web:** the wasm32 build never embeds craft-fonts, even with `CRAFT_FONTS_DIR` set: measured on 2026-10-06, the UI face alone took the release wasm from 24.19 MB to 28.87 MB, over the 24 MiB gate in `packaging/web/package.sh`. The web build therefore has no Japanese font yet (loading craft-fonts next to the wasm at run time would be the way to add one).
+- **Web:** the wasm32 build never embeds craft-fonts, even with `CRAFT_FONTS_DIR` set: measured on 2026-10-06, the UI face alone took the release wasm from 24.19 MB to 28.87 MB, over the 24 MiB gate in `packaging/web/package.sh`. Instead it loads fonts served next to it, on demand: `fonts/manifest.txt` beside `index.html`, in craft-fonts' manifest format (`crates/text/src/served.rs`; hosting: `packaging/web/README.md` › Fonts). `PHOTOCRAFT_WEB_FONTS_DIR="$PWD/../craft-fonts" packaging/web/package.sh` puts craft-fonts there. Served families are in the font menus and are fetched when picked or when a document's text needs them; they aren't in the script fallback list yet, so Japanese text set in a Latin font still needs a Japanese font picked (#1615).
 - Tests that need the fonts skip with a message when `CRAFT_FONTS` is empty; CI's Linux job runs the tests a second time with `CRAFT_FONTS_DIR` set. Desktop releases check out craft-fonts at the commit pinned in `.github/workflows/release.yml` (`CRAFT_FONTS_REF`; ci.yml pins the same commit) and ship each font's `OFL.txt` as `OFL-<family>.txt`.
 
 ## Graphics startup and device loss
@@ -44,18 +67,31 @@ CRAFT_FONTS_DIR="$PWD/../craft-fonts" cargo test --workspace     # runs the Japa
 
 On DX12 the shader compiler is FXC (`d3dcompiler_47.dll`, part of Windows), or a `dxcompiler.dll` placed beside `photocraft.exe`, loaded by its full path. wgpu's default looks `dxcompiler.dll` up by name, which reaches the current directory and `PATH` and loaded other programs' incompatible builds (#712).
 
+Handled windowing and app initialization errors clear this launch's startup marker, restoring any
+prior crash evidence. For example, a Linux launch without `DISPLAY` or `WAYLAND_DISPLAY` does not
+change the next launch's graphics backend. Renderer initialization errors and driver crashes still
+keep the marker for recovery.
+
 If the device is lost while running (#243), every GPU entry point checks the device's health flag first, the canvas switches to the CPU compositor for the rest of the session and a notice says "GPU device was lost; using the CPU renderer." `ui.gpu.simulateLoss` triggers this path from the control channel.
+
+## Logs
+
+The desktop app writes its `log` records to standard error and to `logs/photocraft.log` in the settings directory (Linux `~/.config/photocraft/logs/`, macOS `~/Library/Application Support/Photocraft/logs/`, Windows `%APPDATA%\Photocraft\logs\`, or under `PHOTOCRAFT_CONFIG_DIR` / the portable data folder). A start launched from a desktop menu or the Dock has no terminal, so this file is what to attach to a bug report: GPU startup fallbacks, a lost device and the crash guard's panic report all land there. Each launch moves the previous log to `photocraft.1.log` (and that one to `photocraft.2.log`), so the log of a run that crashed survives the next start. The file stops growing at 16 MiB. `--version` and command-line errors write no file.
+
+By default PhotoCraft's own crates log at `info` and everything else at `warn`. `RUST_LOG` replaces that with env_logger-style directives, for example `RUST_LOG=debug`, `RUST_LOG=warn,photocraft_gpu=trace` or `RUST_LOG=info,wgpu_core=warn`; a directive ending in `*` covers every target starting with it (`photocraft*=debug`). The logger is `apps/photocraft/src/logging.rs`; the web build logs to the browser console instead.
 
 ## Environment variables
 
 | Variable | Effect |
 |---|---|
 | `PHOTOCRAFT_CONTROL_PORT` | Same as `--control <port>` |
+| `RUST_LOG` | Log levels for standard error and the log file (see [Logs](#logs)) |
 | `PHOTOCRAFT_CONTROL_TOKEN` | 64-hex bearer token for control TCP (avoid on shared systems where environment inspection is possible) |
 | `PHOTOCRAFT_CONTROL_TOKEN_FILE` | Read, or create for a server, the control bearer-token file |
-| `PHOTOCRAFT_AUTOMATION_READ_ROOT` | Directory capability for automation reads; requests use relative paths |
-| `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` | Separate directory capability for automation writes; requests use relative paths |
+| `PHOTOCRAFT_AUTOMATION_READ_ROOT` | Desktop app only: automation read root. Headless CLI modes require the `--automation-read-root` flag |
+| `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` | Desktop app only: automation write root. Headless CLI modes require the `--automation-write-root` flag |
 | `PHOTOCRAFT_CPU_CANVAS=1` | Force the CPU canvas path instead of the wgpu shader canvas |
+| `PHOTOCRAFT_NATIVE_WAYLAND=1` | Linux: stay on native Wayland when a pen is attached (by default the window then opens through Xwayland, because Wayland gives the app no pen input; #639) |
 | `WGPU_BACKEND=dx12` | Pick the wgpu backend(s) (`vulkan`, `dx12`, `metal`, `gl`); overrides `performance.gpuBackend` and the startup fallback |
 | `WGPU_DX12_COMPILER=fxc` | DX12 shader compiler (`fxc`, `dxc`, `auto`); `dxc` and `auto` look `dxcompiler.dll` up through the DLL search path |
 | `PHOTOCRAFT_GPU_TILE=2048` | Force GPU canvas tiling (tests tile seams) |
@@ -129,11 +165,14 @@ Keep one `PcraftWriter` per open document: re-saving then only compresses and wr
 - **Headless:** `photocraft-cli mcp --automation-read-root <dir> --automation-write-root <dir>`. It drives an in-process engine session and has no file authority when a root is omitted.
 - **Live app:** start `photocraft --control 7878 --control-token-file <private-path> --automation-read-root <dir> --automation-write-root <dir>`, then run `photocraft-cli mcp --bridge 127.0.0.1:7878 --control-token-file <private-path>`. The desktop process owns the roots. See `docs/control-protocol.md#mcp-bridge`.
 
+For headless MCP clients, pass absolute paths to deliberately chosen trusted workspace directories in the launch arguments. Desktop `PHOTOCRAFT_AUTOMATION_READ_ROOT` and `PHOTOCRAFT_AUTOMATION_WRITE_ROOT` environment variables do **not** grant headless CLI access. Omitting a root flag deliberately denies that direction of access.
+
 Tools:
 
 - `session_list`
 - `doc_open`, `doc_new`, `doc_save`, `doc_export`, `doc_inspect`, `doc_render_preview` (returns a PNG image), `doc_select`, `doc_close`
 - `command_list`, `command_run`, `command_batch` (several commands per call)
+- `jobs_list` (running background jobs with progress, then recently finished ones with their result or error), `jobs_cancel` (one job by id, or every running job)
 - bridge only: `ui_inspect`, `ui_screenshot`, `ui_pointer`, `ui_menu_invoke`, `ui_set`, `control_call`
 
 Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
@@ -143,7 +182,7 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
   "mcpServers": {
     "photocraft": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
-      "args": ["mcp"]
+      "args": ["mcp", "--automation-read-root", "/absolute/path/to/trusted/workspace", "--automation-write-root", "/absolute/path/to/trusted/workspace"]
     },
     "photocraft-live": {
       "command": "/path/to/photocraft/target/release/photocraft-cli",
@@ -155,11 +194,16 @@ Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
 
 ```sh
 cargo build --release -p photocraft-cli
-claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp
+mkdir -p "$PWD/photocraft-work"
+claude mcp add photocraft -- "$PWD/target/release/photocraft-cli" mcp \
+  --automation-read-root "$PWD/photocraft-work" \
+  --automation-write-root "$PWD/photocraft-work"
 ```
 
 `doc_inspect` (and the engine command `document.inspect`) reports the layer tree with kinds,
-bounds, masks, selection, effects (`effects.items[].kind`), smart filters (`smartFilters[]`), type
+bounds, masks, selection, effects (`effects.items[].kind`), smart filters (`smartFilters[]`), smart
+object sources (`smartSource`: `embedded` with its file name, or `linked` with a file path or, for a
+PSD placed layer, the `Idnt` uuid its duplicates share), type
 text, adjustment settings, channels and history, so agents can verify what they did without a
 screenshot. `crates/automation/tests/agent_tasks.rs` is the reference: ten realistic edit tasks
 (title card, colour grade, undo/redo, editable smart blur, masks, saved selections, align,
@@ -168,7 +212,7 @@ capability-scoped export, resize/crop, CMYK + native save) driven purely over MC
 Without MCP, `photocraft-cli serve [--port N]` keeps a headless session open and answers JSON lines
 (see `docs/control-protocol.md#headless-server`).
 
-A typical agent loop:
+A typical agent loop (place inputs under the configured read root and outputs under the write root):
 
 1. `doc_open {path}`
 2. `command_list {filter:"blur"}`
@@ -294,6 +338,16 @@ Any static file server works for `dist/web`, for example `python3 -m http.server
 
 URL flags: `?webgl` forces the WebGL2 backend, and `?cpu` forces the CPU canvas path.
 
+To build and serve the web app entirely in Docker, run from the repository root:
+
+```sh
+docker build --load -t photocraft-web:local .
+docker run --rm -p 8080:8080 photocraft-web:local
+```
+
+Open http://localhost:8080/. See [Docker hosting](../packaging/web/README.md#docker) for
+HTTPS/reverse-proxy deployment and browser limitations.
+
 How the web shell (`apps/photocraft-web/src/web.rs`) differs from desktop:
 
 - **Open** uses `rfd::AsyncFileDialog`. The bytes arrive asynchronously in `Services::inbox`, which the app drains every frame.
@@ -303,6 +357,28 @@ How the web shell (`apps/photocraft-web/src/web.rs`) differs from desktop:
 - **No control server:** browsers can't listen on TCP. To automate the web build, drive headless Chrome with `--remote-debugging-port`. `Page.setInterceptFileChooserDialog` plus `DOM.setFileInputFiles` covers Open, `Input.dispatchDragEvent` with `files` covers drops, and `Browser.setDownloadBehavior` captures downloads.
 - Headless Chrome on macOS (`--headless=new --enable-unsafe-webgpu`) gets a real WebGPU adapter.
 
+
+## Indexed Color timings
+
+`cargo run --release -p photocraft-engine --example indexed_color_perf -- image.png` measures
+palette construction, Floyd–Steinberg diffusion, and the complete full-resolution CPU preview
+path (proxy copy, engine command, result composition; excludes GPU upload/presentation).
+It prints JSON lines for 8, 16, 32, 64, 128 and 256 colours, with one warmup and three measured
+runs per count, plus palette and pixel hashes for exact before/after comparisons. Input files
+stay local; do not publish personal images, palettes, or metadata with benchmark reports.
+
+The synthetic 24 MP lookup comparison is reproducible with
+`cargo test --release -p photocraft-algo indexed_diffusion_24mp_release_comparison -- --ignored --nocapture`.
+It alternates linear/accelerated lookup order and checks identical indices and pixels.
+For the 2026-10-09 local timings both binaries used `CARGO_PROFILE_RELEASE_LTO=false` and
+`CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`; compare binaries built with the same settings.
+
+On native desktop sessions, Indexed Color live previews calculate and flatten on one worker.
+The last preview remains visible while dragging; intermediate settings are coalesced, and only
+a result matching the current document revision, active layer, dialog and parameters is uploaded.
+GPU upload/display conversion still run on the UI thread. Web and `PHOTOCRAFT_INLINE_JOBS=1`
+sessions retain synchronous previews. Closing the dialog invalidates its result; an already
+running calculation finishes without editing the session.
 
 ## Offscreen UI snapshots (no window)
 
@@ -334,6 +410,8 @@ against committed **sha256 manifests**. All pins are in one place:
 | `corpus/psd/` | 170 small psd-tools and ag-psd files, the mix most PSD tests use | psd-tools and ag-psd upstreams (MIT) | `xtask/psd-corpus.sha256` |
 | `corpus/psd-tools/` | the complete psd-tools test set (309 files) | psd-tools upstream (MIT) | `xtask/psd-tools-corpus.sha256` |
 | `corpus/heif/` | 9 small HEIC/HEIF files (checkerboards, RGB strips, a grid-tiled photo with EXIF/XMP, each with Apple's decode as `.ref.png`; a 10-bit RGBA file with its source PNG), for the `heif` feature | heic-rs (MIT OR Apache-2.0) and pillow-heif (BSD-3-Clause) upstreams | `xtask/heif-corpus.sha256` |
+| `corpus/exr/` | the 5 deep OpenEXR test images (scanline deep data with half colour and u32 ID channels; 2.3 MB), checked against the ID manifests of their upstream sidecars | OpenEXR upstream at v3.5.2 (BSD-3-Clause) | `xtask/exr-corpus.sha256` |
+| `corpus/affinity/` | 21 public Affinity documents (four Affinity 3 `.af` files, `.afdesign` vector art, layer/shape/raster test files, a template with artboards), each holding Affinity's own render as its thumbnail | vector-art (CC0), AFDesignLoad, Jac21/Branding and AssetStoreTemplate (MIT) upstreams | `xtask/affinity-corpus.sha256` |
 | `corpus/pngsuite/` | PngSuite | schaik.com release archive (public domain) | (fixed archive) |
 
 ```sh
@@ -341,7 +419,7 @@ cargo xtask corpus                 # where each corpus lives, its pin, present o
 cargo xtask corpus --all           # fetch everything missing or stale (cold: about 15 s; verified copies are left alone)
 cargo xtask test-corpus            # fetch, then cargo test --release --features corpus (+ heif on codecs, io) on psd, codecs, io, engine
 cargo xtask test-corpus -p io      # narrow to one crate (repeat -p for more)
-cargo xtask test-corpus --changed  # only if psd, io, codecs, compose, gpu, text or format changed vs origin/main
+cargo xtask test-corpus --changed  # only if psd, io, codecs, compose, gpu, text, format or affinity changed vs origin/main
 cargo xtask test-corpus -- --nocapture   # pass arguments to the test binaries (per-file tables)
 scripts/fetch-corpus.sh            # the same as cargo xtask corpus --all
 ```

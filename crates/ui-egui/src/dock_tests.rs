@@ -211,6 +211,33 @@ fn reset_workspace_restores_the_default_layout_and_new_workspaces_keep_theirs() 
 }
 
 #[test]
+fn a_single_tab_click_expands_a_collapsed_panel() {
+    for theme in [ThemeKind::ProMedium, ThemeKind::Studio] {
+        for tab_index in [0, 1] {
+            let (mut app, _, _) = app_with_layers();
+            app.ui.dock_tabs.color = 0;
+            app.ui.dock.set_collapsed(Group::Color, true);
+            // Locking prevents rearrangement, not opening an existing panel.
+            app.session.prefs.edit(|p| p.workspace_locked = true);
+            let mut h = harness(app, vec2(1200.0, 800.0), theme);
+            let collapsed_height = rect_of(&h, Group::Color).height();
+            let strips = last_strips(&h.ctx);
+            let strip = strips.iter().find(|s| s.group == Group::Color).unwrap();
+            let tab = strip.tabs.iter().find(|(i, _)| *i == tab_index).unwrap().1.center();
+            h.event(egui::Event::PointerMoved(tab));
+            h.run_steps(1);
+            h.event(egui::Event::PointerButton { pos: tab, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+            h.step();
+            h.event(egui::Event::PointerButton { pos: tab, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+            h.run_steps(3);
+            assert!(!h.state().ui.dock.is_collapsed(Group::Color), "{theme:?}: tab {tab_index}");
+            assert_eq!(h.state().ui.dock_tabs.color, tab_index);
+            assert!(rect_of(&h, Group::Color).height() > collapsed_height);
+        }
+    }
+}
+
+#[test]
 fn double_clicking_a_tab_collapses_and_dragging_a_strip_reorders() {
     let (app, _, _) = app_with_layers();
     let mut h = harness(app, vec2(1200.0, 800.0), ThemeKind::ProMedium);
@@ -565,4 +592,36 @@ fn dock_strips_fit_and_the_chevron_menu_switches_tabs() {
     h.get_by_label("Patterns").click();
     h.run_steps(3);
     assert_eq!(*h.state(), 3, "Patterns chosen from the chevron menu");
+}
+
+#[test]
+fn tab_hides_all_panels_and_shift_tab_only_the_dock() {
+    // #1313: Photoshop's Tab hides the Tools panel, the options bar and the panel dock (Tab again
+    // brings back what it hid); ⇧Tab hides and shows the dock alone.
+    let (mut app, _, _) = app_with_layers();
+    let ctx = egui::Context::default();
+    let run = |app: &mut PhotocraftApp, id: &str| crate::menus::invoke(app, &ctx, id, json!({})).unwrap();
+    app.ui.panels.options_bar = false;
+    run(&mut app, "window.togglePanels");
+    let p = &app.ui.panels;
+    assert!(!p.toolbar && !p.options_bar && !p.dock);
+    run(&mut app, "window.togglePanels");
+    let p = &app.ui.panels;
+    assert!(p.toolbar && !p.options_bar && p.dock, "Tab brings back only what it hid");
+    run(&mut app, "window.toggle.dock");
+    assert!(!app.ui.panels.dock && app.ui.panels.toolbar, "⇧Tab hides only the dock");
+    run(&mut app, "window.toggle.dock");
+    assert!(app.ui.panels.dock);
+    // Everything hidden by hand: Tab shows it all.
+    (app.ui.panels.toolbar, app.ui.panels.options_bar, app.ui.panels.dock) = (false, false, false);
+    run(&mut app, "window.togglePanels");
+    assert!(app.ui.panels.toolbar && app.ui.panels.options_bar && app.ui.panels.dock);
+    // The keys are Photoshop's.
+    let bound = |key: &str| crate::shortcut_dispatch::bindings(&app).into_iter().find(|(_, sc)| Some(*sc) == crate::shortcuts::parse(key)).map(|(id, _)| id);
+    assert_eq!(bound("Tab").as_deref(), Some("window.togglePanels"));
+    assert_eq!(bound("Shift+Tab").as_deref(), Some("window.toggle.dock"));
+    // An older saved UI state without the field shows the dock.
+    let mut v = serde_json::to_value(crate::state::Panels::default()).unwrap();
+    v.as_object_mut().unwrap().remove("dock");
+    assert!(serde_json::from_value::<crate::state::Panels>(v).unwrap().dock);
 }

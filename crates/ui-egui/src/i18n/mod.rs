@@ -82,8 +82,21 @@ fn plural_pt(n: u64) -> usize {
     usize::from(n > 1)
 }
 
+/// Polish: 1 → one; 2–4, except 12–14 → few; everything else → many.
+fn plural_polish(n: u64) -> usize {
+    let last = n % 10;
+    let last_two = n % 100;
+    if n == 1 {
+        0
+    } else if (2..=4).contains(&last) && !(12..=14).contains(&last_two) {
+        1
+    } else {
+        2
+    }
+}
+
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 13] = [
+pub static LANGUAGES: [LangInfo; 17] = [
     LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, complete_menus: false, catalog: OnceLock::new() },
     LangInfo { code: "ja", name: "日本語", source: include_str!("ja.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo {
@@ -96,10 +109,15 @@ pub static LANGUAGES: [LangInfo; 13] = [
     },
     LangInfo { code: "es", name: "Español", source: include_str!("es.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "ru", name: "Русский", source: include_str!("ru.tsv"), plural: plural_russian, complete_menus: true, catalog: OnceLock::new() },
+    // Ukrainian has the same one/few/many rule for integer counts.
+    LangInfo {
+        code: "uk", name: "Українська", source: include_str!("uk.tsv"), plural: plural_russian, complete_menus: true, catalog: OnceLock::new()
+    },
     LangInfo { code: "cs", name: "Čeština", source: include_str!("cs.tsv"), plural: plural_cs, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "fr", name: "Français", source: include_str!("fr.tsv"), plural: plural_fr, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "id", name: "Bahasa Indonesia", source: include_str!("id.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "ko", name: "한국어", source: include_str!("ko.tsv"), plural: plural_none, complete_menus: true, catalog: OnceLock::new() },
+    LangInfo { code: "pl", name: "Polski", source: include_str!("pl.tsv"), plural: plural_polish, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "de", name: "Deutsch", source: include_str!("de.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
     // Brazilian Portuguese; `pt`, `pt-BR` and `pt-PT` locales all resolve here (see `candidates`).
     LangInfo {
@@ -110,6 +128,9 @@ pub static LANGUAGES: [LangInfo; 13] = [
         complete_menus: true,
         catalog: OnceLock::new(),
     },
+    LangInfo { code: "el", name: "Ελληνικά", source: include_str!("el.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
+    // Dutch; `nl-NL` and `nl-BE` locales both resolve here.
+    LangInfo { code: "nl", name: "Nederlands", source: include_str!("nl.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
     LangInfo { code: "it", name: "Italiano", source: include_str!("it.tsv"), plural: plural_one_other, complete_menus: true, catalog: OnceLock::new() },
 ];
 
@@ -336,6 +357,8 @@ mod tests {
         assert_eq!(lang_from_tag("de-AT"), Lang::from_code("de"));
         assert_eq!(lang_from_tag("it_IT.UTF-8"), Lang::from_code("it"));
         assert_eq!(lang_from_tag("it-CH"), Lang::from_code("it"));
+        assert_eq!(lang_from_tag("nl_NL.UTF-8"), Lang::from_code("nl"));
+        assert_eq!(lang_from_tag("nl-BE"), Lang::from_code("nl"));
         // Traditional Chinese: by region, by script, and with a region after the script.
         assert_eq!(lang_from_tag("zh_TW.UTF-8"), Some(ZH()));
         assert_eq!(lang_from_tag("zh-TW"), Some(ZH()));
@@ -470,6 +493,64 @@ mod tests {
     }
 
     #[test]
+    fn ukrainian_resolves_locales_and_preferences() {
+        let uk = Lang::from_code("uk").expect("uk registered");
+        assert_eq!(uk.name(), "Українська");
+        assert!(uk.complete_menus());
+        for tag in ["uk", "UK", "uk-UA", "uk_UA", "uk_UA.UTF-8", "uk-UA@euro", "uk-Cyrl-UA"] {
+            assert_eq!(lang_from_tag(tag), Some(uk), "{tag}");
+            assert_eq!(Lang::from_pref(tag), uk, "{tag}");
+        }
+        assert_eq!(tr(uk, "File"), "Файл");
+        assert_eq!(tr(uk, "Layer"), "Шар");
+        assert_eq!(tr(uk, "New document…"), "Новий документ…");
+        assert_eq!(tr(uk, "No properties"), "Немає властивостей");
+        assert_eq!(tr_id(uk, "select.all", "All"), "Виділити все");
+        assert_eq!(tr_ctx(uk, "cameraRaw", "Light"), "Світло");
+        assert_eq!(tr_ctx(uk, "fontWeight", "Light"), "Легкий");
+        assert_eq!(fmt(tr(uk, "Camera Raw Filter ({layer})"), &[("layer", "Background")]), "Фільтр Camera Raw (Background)");
+        for key in ["Alt", "⌥"] {
+            assert_eq!(
+                fmt(tr(uk, "Add a mask  (from the selection; {key} inverts)"), &[("key", key)]),
+                format!("Додати маску  (із виділення; {key} інвертує)")
+            );
+        }
+        assert_eq!(tr(uk, "unknown translation"), "unknown translation");
+    }
+
+    #[test]
+    fn ukrainian_plural_messages_handle_teens_and_compound_counts() {
+        let uk = Lang::from_code("uk").expect("uk registered");
+        for (n, item, layer) in [
+            (0, "елементів", "шарів"),
+            (1, "елемент", "шар"),
+            (2, "елементи", "шари"),
+            (4, "елементи", "шари"),
+            (5, "елементів", "шарів"),
+            (11, "елементів", "шарів"),
+            (12, "елементів", "шарів"),
+            (14, "елементів", "шарів"),
+            (19, "елементів", "шарів"),
+            (21, "елемент", "шар"),
+            (22, "елементи", "шари"),
+            (24, "елементи", "шари"),
+            (25, "елементів", "шарів"),
+            (100, "елементів", "шарів"),
+            (101, "елемент", "шар"),
+            (111, "елементів", "шарів"),
+            (112, "елементів", "шарів"),
+            (114, "елементів", "шарів"),
+            (121, "елемент", "шар"),
+            (122, "елементи", "шари"),
+            (u64::MAX, "елементів", "шарів"),
+        ] {
+            assert_eq!(trn(uk, n, "{n} item", "{n} items"), format!("{n} {item}"));
+            assert_eq!(trn(uk, n, "{n} layer", "{n} layers"), format!("{n} {layer}"));
+            assert_eq!(trn(uk, n, "Group · {n} layer", "Group · {n} layers"), format!("Група · {n} {layer}"));
+        }
+    }
+
+    #[test]
     fn catalog_kinds_are_parsed_and_looked_up() {
         let c = Catalog::parse("# c\n\tHello\tこんにちは\n@id\tfile.save\t保存する\nmenu\tWindows\tウィンドウ群\n@plural\t{n} file|{n} files\t{n} 個\n\n");
         assert_eq!(c.plain("Hello"), Some("こんにちは"));
@@ -520,6 +601,12 @@ mod tests {
         assert_eq!(trn(fr, 0, "{n} item", "{n} items"), "0 élément");
         assert_eq!(trn(fr, 1, "{n} item", "{n} items"), "1 élément");
         assert_eq!(trn(fr, 3, "{n} item", "{n} items"), "3 éléments");
+    }
+
+    #[test]
+    fn polish_plural_rule() {
+        let forms: Vec<usize> = [0, 1, 2, 4, 5, 12, 14, 21, 22, 25, 112, 122].into_iter().map(plural_polish).collect();
+        assert_eq!(forms, [2, 0, 1, 1, 2, 2, 2, 2, 1, 2, 2, 1]);
     }
 
     #[test]
@@ -647,6 +734,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn layer_color_names_are_translated() {
+        for lang in Lang::all().filter(|l| l.complete_menus()) {
+            for color in photocraft_doc::LabelColor::ALL {
+                let cat = lang.0.catalog();
+                assert!(
+                    cat.contextual("layerLabel", color.label()).or_else(|| cat.plain(color.label())).is_some(),
+                    "{} missing {}",
+                    lang.code(),
+                    color.label()
+                );
+            }
+        }
+        let de = lang_from_tag("de").unwrap();
+        assert_eq!(tr_ctx(de, "layerLabel", "No Color"), "Keine Farbe");
+        assert_eq!(tr_ctx(de, "layerLabel", "Seafoam"), "Meeresschaum");
+        assert_eq!(tr(Lang::EN, "Seafoam"), "Seafoam");
+    }
+
+    /// Font style labels are built from dynamic words (weights, "Italic"), so the literal
+    /// scanner cannot cover them; "Light" there is a weight, distinct from the Camera Raw
+    /// "Light" section (`type_tool::style_label`).
+    #[test]
+    fn font_weight_names_are_translated() {
+        const TERMS: &[&str] = &["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black", "Italic"];
+        for lang in Lang::all().filter(|l| l.complete_menus()) {
+            for t in TERMS {
+                assert!(lang.0.catalog().contextual("fontWeight", t).is_some(), "{} missing font weight: {t}", lang.code());
+            }
+            assert_ne!(tr_ctx(lang, "cameraRaw", "Light"), tr_ctx(lang, "fontWeight", "Light"), "{}: Camera Raw Light vs the font weight", lang.code());
+        }
+    }
+
     /// Blend mode names come from the colour crate; each must be translated.
     #[test]
     fn blend_mode_names_are_translated() {
@@ -660,6 +780,21 @@ mod tests {
     #[test]
     fn mixer_brush_ui_strings_have_translations_in_every_registered_language() {
         const STRINGS: &[&str] = &["Mixer Brush", "Mixer Brush Tool", "Wet", "Load", "Mix", "Flow", "Sample All Layers"];
+        for lang in Lang::all() {
+            for source in STRINGS {
+                let translated = tr(lang, source);
+                if lang == Lang::EN {
+                    assert_eq!(translated, *source, "English source string {source}");
+                } else {
+                    assert_ne!(translated, *source, "{} is missing {source:?}", lang.code());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pattern_stamp_ui_strings_have_translations_in_every_registered_language() {
+        const STRINGS: &[&str] = &["Pattern Stamp Tool", "Pattern Stamp", "Impressionist", "Aligned"];
         for lang in Lang::all() {
             for source in STRINGS {
                 let translated = tr(lang, source);

@@ -119,13 +119,12 @@ pub(crate) fn image_to_document(name: &str, img: &Image) -> Result<ImportResult,
     doc.icc_profile = img.icc.clone().map(Arc::new);
     doc.metadata.exif = img.meta.exif.clone().map(Arc::new);
     doc.metadata.xmp = img.meta.xmp.clone();
-    if let Some((x, _)) = img.meta.dpi {
+    doc.metadata.text = img.meta.text.clone();
+    if let Some((x, y)) = img.meta.dpi {
         doc.resolution_dpi = x;
+        warnings.extend(crate::unequal_resolution_warning(f64::from(x), f64::from(y)));
     }
-    if !img.meta.text.is_empty() {
-        warnings.push(format!("{} text metadata entries are not kept in the document", img.meta.text.len()));
-    }
-    Ok(ImportResult { document: doc, warnings })
+    Ok(ImportResult { document: doc, warnings, source_read_only: false, preview_only: false })
 }
 
 /// `Some(surface)` when the document is exactly one visible, unmasked,
@@ -256,6 +255,7 @@ pub fn document_to_image(doc: &Document, warnings: &mut Vec<String>) -> Result<I
     let meta = codecs::Metadata {
         exif: doc.metadata.exif.as_ref().map(|e| e.to_vec()),
         xmp: doc.metadata.xmp.clone(),
+        text: doc.metadata.text.clone(),
         dpi: Some((doc.resolution_dpi, doc.resolution_dpi)),
         ..Default::default()
     };
@@ -314,6 +314,8 @@ pub fn export_flat(doc: &Document, format: Format, opts: &ExportOptions) -> Resu
         // Export As's Metadata: None: the packet lists the text of every type layer and one id
         // per placed document (#647).
         img.meta.xmp = None;
+        // Free-form descriptions can contain the same sensitive text as an XMP packet.
+        img.meta.text.clear();
     }
     if img.layout().has_alpha() && !format.caps().alpha {
         // Flattened over white, as saving a transparent document without transparency does.
@@ -363,13 +365,20 @@ pub fn export_flat(doc: &Document, format: Format, opts: &ExportOptions) -> Resu
             });
         }
     }
-    for w in codecs::fidelity_warnings_with(&img, format, &opts.encode) {
+    encode_image(&img, format, opts, warnings)
+}
+
+/// Encodes a flat codec image as `format`: the fidelity warnings, then the codec. The end of
+/// every flat export, and of a layered TIFF (whose composite is a flat image to other readers),
+/// so export-wide policies on the image's metadata apply to both.
+pub(crate) fn encode_image(img: &Image, format: Format, opts: &ExportOptions, mut warnings: Vec<String>) -> Result<ExportResult, IoError> {
+    for w in codecs::fidelity_warnings_with(img, format, &opts.encode) {
         if w.is_fatal() {
             return Err(IoError::Unsupported(w.to_string()));
         }
         warnings.push(w.to_string());
     }
-    let bytes = codecs::encode(&img, format, &opts.encode)?;
+    let bytes = codecs::encode(img, format, &opts.encode)?;
     Ok(ExportResult { bytes, warnings })
 }
 
@@ -440,15 +449,42 @@ fn cmyk_image_to_srgb(img: &Image) -> Result<Image, IoError> {
     let t = Transform::new(&src, dst, Intent::RelativeColorimetric, true).map_err(|e| IoError::Unsupported(e.to_string()))?;
     let alpha = img.layout().has_alpha();
     let (ss, ds) = (if alpha { 5 } else { 4 }, if alpha { 4 } else { 3 });
-    let vals = img.to_normalized();
-    let mut out = vec![0.0f32; img.pixel_count() * ds];
-    t.convert_f32(&vals, ss, &mut out, ds, true);
     let (w, h) = img.dimensions();
     let layout = if alpha { ChannelLayout::Rgba } else { ChannelLayout::Rgb };
     let sample = match img.sample_type() {
         CSample::F16 => CSample::F32,
         s => s,
     };
+    // Row bands through the transform: three full-size f32 buffers (normalized input, the
+    // transform's working set, sRGB output) become band-height slices — ~1.4 GB of allocation
+    // churn at 36 MP before this. `convert_f32` walks plain strided slices, so bands are free.
+    let row = w as usize;
+    let src_bpp = img.layout().channels() * img.sample_type().bytes();
+    let h_rows = h as usize;
+    // `max(1)` keeps a zero-width or zero-height image from dividing by zero or inverting the
+    // clamp range; such an image simply has no bands.
+    let band_rows = (BAND_BYTES / (row * ss * 4).max(1)).clamp(1, h_rows.max(1));
+    let mut out = Vec::with_capacity(img.pixel_count() * ds);
+    let mut vals: Vec<f32> = Vec::with_capacity(band_rows * row * ss);
+    let mut dst_band: Vec<f32> = Vec::with_capacity(band_rows * row * ds);
+    // Whole bands of rows only: a trailing partial row (h not a multiple of band_rows, or a
+    // 1-row image smaller than the band budget) is folded into the last band.
+    let mut idx = 0usize;
+    while idx < h_rows {
+        let n = band_rows.min(h_rows - idx);
+        let bytes = |r: usize| r.checked_mul(row).and_then(|v| v.checked_mul(src_bpp));
+        let rows = bytes(idx)
+            .zip(bytes(idx + n))
+            .and_then(|(a, b)| img.data().get(a..b))
+            .ok_or_else(|| IoError::Unsupported("CMYK image data is shorter than its dimensions".into()))?;
+        idx += n;
+        vals.clear();
+        vals.extend(Image::from_raw(w, n as u32, img.layout(), img.sample_type(), rows.to_vec())?.to_normalized());
+        dst_band.clear();
+        dst_band.resize(n * row * ds, 0.0);
+        t.convert_f32(&vals, ss, &mut dst_band, ds, true);
+        out.extend_from_slice(&dst_band);
+    }
     Ok(Image::from_normalized(w, h, layout, sample, &out)?.with_icc(Some(dst.to_bytes().to_vec())).with_meta(img.meta.clone()))
 }
 
@@ -466,7 +502,11 @@ fn export_mode_specific(doc: &Document, format: Format, opts: &ExportOptions) ->
                 Ok(())
             });
             let bytes = codecs::encode_png_indexed(doc.size.width, doc.size.height, &idx, &table.colors, table.transparent)?;
-            Ok(Some(ExportResult { bytes, warnings: vec![format!("written as an 8-bit palette PNG ({} colours)", table.colors.len())] }))
+            let mut warnings = vec![format!("written as an 8-bit palette PNG ({} colours)", table.colors.len())];
+            if opts.encode.embed_metadata && opts.xmp == XmpEmbed::All && !doc.metadata.text.is_empty() {
+                warnings.push("text metadata is not supported by the palette PNG exporter; it will be dropped".into());
+            }
+            Ok(Some(ExportResult { bytes, warnings }))
         }
         ColorMode::Duotone => {
             let Some(d) = doc.duotone.as_ref() else { return Ok(None) };
@@ -481,5 +521,34 @@ fn export_mode_specific(doc: &Document, format: Format, opts: &ExportOptions) ->
             Ok(Some(r))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod cmyk_band_tests {
+    use super::*;
+
+    #[test]
+    fn empty_cmyk_images_convert_without_panicking() {
+        // Zero width divided the band size by zero; zero height inverted the clamp range.
+        for (w, h) in [(0, 0), (0, 7), (7, 0)] {
+            let img = Image::from_raw(w, h, ChannelLayout::Cmyk, CSample::U8, Vec::new()).unwrap();
+            if let Ok(out) = cmyk_image_to_srgb(&img) {
+                assert_eq!(out.dimensions(), (w, h));
+            }
+        }
+    }
+
+    #[test]
+    fn banded_conversion_covers_every_row() {
+        // One colour everywhere converts to one colour everywhere, first row to last.
+        let (w, h) = (5u32, 9u32);
+        let img = Image::from_raw(w, h, ChannelLayout::CmykA, CSample::U8, [40, 90, 10, 20, 255].repeat((w * h) as usize)).unwrap();
+        let out = cmyk_image_to_srgb(&img).unwrap();
+        assert_eq!(out.dimensions(), (w, h));
+        assert_eq!(out.data().len(), (w * h * 4) as usize);
+        let first = out.data().get(..4).unwrap().to_vec();
+        assert!(out.data().chunks(4).all(|p| p == first.as_slice()), "{:?}", out.data());
+        assert_eq!(first[3], 255);
     }
 }

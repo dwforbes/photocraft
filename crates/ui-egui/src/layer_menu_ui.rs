@@ -2,7 +2,7 @@
 //! unavailable ones are greyed using the same enablement as the main menus. Items marked as menu
 //! invocations (`Value::Null` params) go through `menus::invoke`, so dialogs open like in the menu bar.
 
-use photocraft_doc::{Layer, LayerContent};
+use photocraft_doc::{LabelColor, Layer, LayerContent};
 use serde_json::{Value, json};
 
 /// One entry: label, command id. `None` = separator.
@@ -118,9 +118,79 @@ pub fn show(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bo
             rename = true;
             ui.close();
         }
+        color_menu(app, ui, l, on_set, actions);
         rename
     })
 }
+
+fn color_name(color: LabelColor) -> &'static str {
+    crate::i18n::tr_ctx(crate::i18n::current(), "layerLabel", color.label())
+}
+
+fn common_color(app: &crate::PhotocraftApp, l: &Layer, on_set: bool) -> Option<LabelColor> {
+    if !on_set {
+        return Some(l.label);
+    }
+    let st = app.session.active()?;
+    let ids = st.selected_layers();
+    let mut labels = ids.iter().filter_map(|id| st.doc.layer(*id).map(|l| l.label));
+    let first = labels.next()?;
+    labels.all(|c| c == first).then_some(first)
+}
+
+fn color_menu(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bool, actions: &mut Vec<(String, Value)>) {
+    let current = common_color(app, l, on_set);
+    ui.menu_button(tl!("Color"), |ui| {
+        crate::widgets::menu_scroll(ui, |ui| {
+            ui.set_min_width(170.0);
+            for color in LabelColor::ALL {
+                if color == LabelColor::Red {
+                    ui.separator();
+                }
+                if color_button(ui, color, current == Some(color)).clicked() {
+                    let params = if on_set {
+                        json!({"color": color.id()})
+                    } else {
+                        actions.push(("layer.select".into(), json!({"layer": l.id.0})));
+                        json!({"layer": l.id.0, "color": color.id()})
+                    };
+                    actions.push(("layer.setLabelColor".into(), params));
+                    ui.close();
+                }
+            }
+        });
+    });
+}
+
+fn color_button(ui: &mut egui::Ui, color: LabelColor, checked: bool) -> egui::Response {
+    use egui::{Atom, Rect, Stroke, StrokeKind, vec2};
+    let t = crate::theme::Tokens::get(ui.ctx());
+    let check_id = ui.id().with(("label-check", color.id()));
+    let swatch_id = ui.id().with(("label-swatch", color.id()));
+    let name = color_name(color);
+    let button = egui::Button::new((Atom::custom(check_id, vec2(14.0, 16.0)), Atom::custom(swatch_id, vec2(16.0, 16.0)), name, Atom::grow())).atom_ui(ui);
+    if checked && let Some(rect) = button.rect(check_id) {
+        crate::icons::paint(ui, rect, "check", 14.0, t.icon);
+    }
+    if let Some(rect) = button.rect(swatch_id) {
+        let rect = Rect::from_center_size(rect.center(), vec2(16.0, 16.0));
+        let p = ui.painter();
+        if let Some((swatch, _)) = t.layer_label_colors(color) {
+            p.rect_filled(rect, t.radius_sm, swatch);
+        } else {
+            let stroke = Stroke::new(1.0, t.text_dim);
+            p.rect_stroke(rect, t.radius_sm, stroke, StrokeKind::Inside);
+            let r = rect.shrink(4.0);
+            p.line_segment([r.left_top(), r.right_bottom()], stroke);
+            p.line_segment([r.right_top(), r.left_bottom()], stroke);
+        }
+    }
+    button.response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), checked, name));
+    button.response
+}
+
+#[cfg(test)]
+mod color_tests;
 
 #[cfg(test)]
 mod tests {

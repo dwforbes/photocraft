@@ -80,14 +80,31 @@ pub fn intercept(app: &mut PhotocraftApp, id: &str, params: &Value) -> bool {
     true
 }
 
-/// Called once per frame: holds back a window close request while there is unsaved work.
+impl PhotocraftApp {
+    /// Whether closing now would lose work: a document has unsaved changes and closing wasn't
+    /// confirmed. The web build has the browser ask before leaving the page while this holds (#1380).
+    pub fn has_unsaved_work(&self) -> bool {
+        !self.allow_close && self.session.documents().iter().any(|d| d.is_dirty())
+    }
+}
+
+/// Called once per frame: holds back a window close request while there is unsaved work. Every
+/// way of leaving (File › Exit / Quit, the close button, the OS's quit event, `app.quit`) ends up
+/// here as a close request.
 pub fn guard_window_close(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    if app.allow_close || !ctx.input(|i| i.viewport().close_requested()) {
+    if !ctx.input(|i| i.viewport().close_requested()) {
         return;
     }
-    if intercept(app, EXIT, &Value::Null) {
+    if !app.allow_close && intercept(app, EXIT, &Value::Null) {
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        return;
+    }
+    // Leaving: through the platform's own quit where there is one (see `Services::quit`), with
+    // the window left open for it to close.
+    if let Some(quit) = app.services.quit.as_mut() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        quit();
     }
 }
 
@@ -117,23 +134,55 @@ fn advance(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
 }
 
-/// Saves `doc` in place; false when it is gone, the save failed or its file dialog was cancelled.
+/// Saves `doc`; true once it is saved. A document without a file to write back to asks where in
+/// the save dialog: the prompt then hides until it is answered, and moves on only if it saved.
 fn save(app: &mut PhotocraftApp, ctx: &egui::Context, doc: DocId) -> bool {
     let Some(i) = index_of(app, doc) else { return false };
     app.session.set_active(i);
-    match crate::menus::invoke_unguarded(app, ctx, "file.save", json!({})) {
-        Ok(_) => true,
+    let saved = crate::menus::invoke_unguarded(app, ctx, "file.save", json!({}));
+    if saved.is_ok() && app.file_dialog_open() {
+        let ctx = ctx.clone();
+        app.after_file_dialog(move |app, saved| {
+            let saved = saved.map_err(couldnt_save)?;
+            saved_document(app, &ctx, doc);
+            Ok(saved)
+        });
+        return false;
+    }
+    match saved {
+        Ok(_) => app.tiff_options.is_none(),
         // Backing out of the file dialog is the user's choice, not an error.
-        Err(e) if e == "cancelled" => false,
+        Err(e) if e == crate::file_dialog::CANCELLED => false,
         Err(e) => {
-            app.ui.status = format!("Couldn't save: {e}");
+            app.ui.status = couldnt_save(e);
             app.ui.status_error = true;
             false
         }
     }
 }
 
+/// A completed save may release the close prompt. Choosing a path only starts a layered TIFF
+/// save; TIFF Options calls this after the write. Copies and failed writes leave the doc dirty.
+pub(crate) fn saved_document(app: &mut PhotocraftApp, ctx: &egui::Context, doc: DocId) {
+    // Still the prompt that asked (quitting may have replaced it meanwhile).
+    if app.tiff_options.is_none()
+        && app.discard.as_ref().and_then(|p| p.docs.first()) == Some(&doc)
+        && index_of(app, doc).is_some_and(|i| !app.session.documents()[i].is_dirty())
+    {
+        advance(app, ctx);
+    }
+}
+
+/// A save failure as reported ("cancelled" stays as it is: it isn't reported).
+fn couldnt_save(e: String) -> String {
+    if e == crate::file_dialog::CANCELLED { e } else { format!("Couldn't save: {e}") }
+}
+
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    // Save can ask for a path and then TIFF Options. Wait for both; cancellation brings us back.
+    if app.file_dialog_open() || app.tiff_options.is_some() {
+        return;
+    }
     let Some(p) = &app.discard else { return };
     let Some(&doc) = p.docs.first() else { return };
     let (exits, reverts) = (p.id == EXIT, p.id == "file.revert");
@@ -337,17 +386,29 @@ mod tests {
 
     type Prompted = egui_kittest::Harness<'static, PhotocraftApp>;
 
+    /// The unsaved-changes prompt for `command` over `app`'s dirty documents, as `os` draws it (with
+    /// the file dialogs shown and answered at the end of each frame, as the app does).
+    fn prompt_for(app: PhotocraftApp, command: &str, os: egui::os::OperatingSystem) -> Prompted {
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(
+            |ui, app| {
+                show(app, ui.ctx());
+                app.poll_file_dialog(ui.ctx(), None);
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.ctx.set_os(os);
+        assert!(intercept(h.state_mut(), command, &Value::Null));
+        h.run_steps(2);
+        h
+    }
+
     /// The unsaved-changes prompt for Close All over two dirty documents, as `os` draws it.
     fn prompt_on(os: egui::os::OperatingSystem) -> Prompted {
         let mut app = app_with_docs(2);
         make_dirty(&mut app, 0);
         make_dirty(&mut app, 1);
-        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 600.0)).build_ui_state(|ui, app| show(app, ui.ctx()), app);
-        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
-        h.ctx.set_os(os);
-        assert!(intercept(h.state_mut(), "file.closeAll", &Value::Null));
-        h.run_steps(2);
-        h
+        prompt_for(app, "file.closeAll", os)
     }
 
     /// The buttons named `labels`, sorted by where they are drawn, left to right.
@@ -414,40 +475,82 @@ mod tests {
 
     #[test]
     fn enter_takes_the_default_answer_or_the_focused_button() {
-        use std::{cell::Cell, rc::Rc};
         let mut h = prompt_on(egui::os::OperatingSystem::Windows);
-        let asked = Rc::new(Cell::new(false));
-        let seen = asked.clone();
         // Backing out of the save dialog keeps the prompt.
-        h.state_mut().services.pick_save = Some(Box::new(move |_| {
-            seen.set(true);
-            None
-        }));
+        let (show, asked) = crate::file_dialog::fake(vec![None]);
+        h.state_mut().services.file_dialog = Some(show);
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert!(asked.get(), "Enter answered Yes, which saves");
+        assert_eq!(asked.borrow().len(), 1, "Enter answered Yes, which saves");
         assert_eq!(docs_left(&h), Some(2));
         // Tab to No: Enter now presses it.
         for _ in 0..2 {
             h.key_press(Key::Tab);
             h.run_steps(2);
         }
-        asked.set(false);
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert!(!asked.get());
+        assert_eq!(asked.borrow().len(), 1, "no second dialog");
         assert_eq!(docs_left(&h), Some(1), "Enter pressed the focused No");
     }
 
-    /// One frame with the window's close button pressed; whether the guard cancelled the close.
-    fn press_window_close(app: &mut PhotocraftApp) -> bool {
+    #[test]
+    fn saving_from_the_prompt_waits_for_the_save_dialog_then_closes() {
+        use crate::{FileDialogAnswer, FileDialogReply};
+        use egui_kittest::kittest::Queryable;
+        use std::{cell::RefCell, rc::Rc};
+        let written: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (w, waiting): (_, Rc<RefCell<Option<FileDialogReply>>>) = (written.clone(), Rc::default());
+        let held = waiting.clone();
+        let mut app = app_with_docs(1);
+        make_dirty(&mut app, 0);
+        app.services.export = Some(Box::new(|_: &photocraft_doc::Document, _: &str, _: &crate::ExportSettings| Ok((b"out".to_vec(), Vec::new()))));
+        app.services.write = Some(Box::new(move |p: &str, _: &[u8]| {
+            w.borrow_mut().push(p.to_string());
+            Ok(())
+        }));
+        // A dialog the user takes their time with.
+        app.services.file_dialog = Some(Box::new(move |_, _, reply| *held.borrow_mut() = Some(reply)));
+        let mut h = prompt_for(app, "file.close", egui::os::OperatingSystem::Windows);
+        let answer = |h: &mut Prompted, a: Option<FileDialogAnswer>| {
+            waiting.borrow_mut().take().expect("the save dialog is open").send(a);
+            h.run_steps(2);
+        };
+        // Cancelling the save dialog brings the prompt back.
+        h.key_press(Key::Y);
+        h.run_steps(3);
+        assert!(h.state().file_dialog_open());
+        assert!(h.query_by_label("(Y)es").is_none(), "the prompt waits behind the dialog");
+        answer(&mut h, None);
+        assert_eq!(docs_left(&h), Some(1));
+        assert!(h.query_by_label("(Y)es").is_some());
+        // Saving closes the document.
+        h.key_press(Key::Y);
+        h.run_steps(3);
+        assert_eq!(h.state().session.documents().len(), 1, "still open while the dialog is");
+        answer(&mut h, Some(FileDialogAnswer::SaveTo("/pics/kept.psd".into())));
+        assert_eq!(*written.borrow(), ["/pics/kept.psd"]);
+        assert!(h.state().discard.is_none());
+        assert!(h.state().session.documents().is_empty());
+    }
+
+    #[path = "tiff_tests.rs"]
+    mod tiff_tests;
+
+    /// One frame with the window's close button pressed; the commands the guard sent.
+    fn window_close_commands(app: &mut PhotocraftApp) -> Vec<egui::ViewportCommand> {
         let mut info = egui::ViewportInfo::default();
         info.events.push(egui::ViewportEvent::Close);
         let mut input = egui::RawInput::default();
         input.viewports.insert(egui::ViewportId::ROOT, info);
         let mut out = egui::Context::default().run_ui(input, |ui| guard_window_close(app, ui.ctx()));
         out.textures_delta.clear();
-        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        out.viewport_output.remove(&egui::ViewportId::ROOT).map(|o| o.commands).unwrap_or_default()
+    }
+
+    /// One frame with the window's close button pressed; whether the guard cancelled the close.
+    fn press_window_close(app: &mut PhotocraftApp) -> bool {
+        let commands = &window_close_commands(app);
         let cancelled = commands.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose));
         assert_eq!(commands.iter().any(|c| matches!(c, egui::ViewportCommand::Focus)), cancelled);
         cancelled
@@ -462,6 +565,16 @@ mod tests {
     }
 
     #[test]
+    fn unsaved_work_is_any_dirty_document_until_closing_is_confirmed() {
+        let mut app = app_with_docs(2);
+        assert!(!app.has_unsaved_work());
+        make_dirty(&mut app, 1);
+        assert!(app.has_unsaved_work(), "a dirty document that isn't the active one counts");
+        app.allow_close = true;
+        assert!(!app.has_unsaved_work());
+    }
+
+    #[test]
     fn window_close_goes_through_when_nothing_is_unsaved_or_it_was_confirmed() {
         let mut app = app_with_docs(1);
         assert!(!press_window_close(&mut app));
@@ -469,5 +582,34 @@ mod tests {
         app.allow_close = true;
         assert!(!press_window_close(&mut app));
         assert!(app.discard.is_none());
+    }
+
+    /// With a platform quit (macOS), leaving runs it and keeps the window open for it to close;
+    /// unsaved work still asks first.
+    #[test]
+    fn leaving_runs_the_platform_quit_instead_of_closing_the_window() {
+        use std::{cell::Cell, rc::Rc};
+        let quits = Rc::new(Cell::new(0));
+        let mut app = app_with_docs(1);
+        let counted = quits.clone();
+        app.services.quit = Some(Box::new(move || counted.set(counted.get() + 1)));
+        // The close is cancelled for the quit to do it, with no prompt brought forward.
+        let cancels_only = |c: &[egui::ViewportCommand]| {
+            c.iter().any(|c| matches!(c, egui::ViewportCommand::CancelClose)) && !c.iter().any(|c| matches!(c, egui::ViewportCommand::Focus))
+        };
+
+        assert!(cancels_only(&window_close_commands(&mut app)), "the window stays for the quit to close");
+        assert_eq!(quits.get(), 1);
+
+        make_dirty(&mut app, 0);
+        assert!(press_window_close(&mut app), "unsaved work asks first");
+        assert_eq!(quits.get(), 1, "no quit while the prompt is up");
+        assert!(app.discard.is_some());
+
+        // Don't Save: the prompt confirms, and the close it sends quits.
+        app.discard = None;
+        app.allow_close = true;
+        assert!(cancels_only(&window_close_commands(&mut app)));
+        assert_eq!(quits.get(), 2);
     }
 }

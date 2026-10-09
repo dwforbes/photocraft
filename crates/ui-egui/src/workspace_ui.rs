@@ -275,6 +275,26 @@ fn custom_par(app: &mut PhotocraftApp, p: &Value) -> Result<Value, String> {
     Ok(json!({"pixelAspectRatio": c.ratio, "name": c.name}))
 }
 
+/// The Show Extras Options… checkboxes as (field, label). The fields are the serialized
+/// [`crate::view_cmds::Show`] names, the keys the dialog is seeded with and its command accepts.
+fn extras_options() -> [(&'static str, &'static str); 13] {
+    [
+        ("layer_edges", tl!("Layer Edges")),
+        ("selection_edges", tl!("Selection Edges")),
+        ("target_path", tl!("Target Path")),
+        ("notes", tl!("Notes")),
+        ("pixel_grid", tl!("Pixel Grid")),
+        ("slices", tl!("Slices")),
+        ("count", tl!("Count")),
+        ("smart_guides", tl!("Smart Guides")),
+        ("brush_preview", tl!("Brush Preview")),
+        ("mesh", tl!("Mesh")),
+        ("edit_pins", tl!("Edit Pins")),
+        ("canvas_guides", tl!("Canvas Guides")),
+        ("artboard_guides", tl!("Artboard Guides")),
+    ]
+}
+
 /// The open dialog's OK as (command id, params).
 pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static str, Value)> {
     Some(match kind {
@@ -285,6 +305,29 @@ pub fn dialog_command(kind: &str, f: &Map<String, Value>) -> Option<(&'static st
         "extrasOptions" => ("view.show.showExtrasOptions", Value::Object(f.clone())),
         _ => return None,
     })
+}
+
+/// The title of a dialog kind.
+pub fn title(kind: &str) -> &'static str {
+    match kind {
+        "newWorkspace" => "New Workspace",
+        "deleteWorkspace" => "Delete Workspace",
+        "customPar" => "Save Pixel Aspect Ratio",
+        "preview32" => "32-bit Preview Options",
+        _ => "Show Extras Options",
+    }
+}
+
+/// OK on the open dialog (its button, or `ui.dialog.confirm {"dialog": "shell"}`): runs its
+/// command, then closes it; on an error the dialog stays open.
+pub fn confirm(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<Value, String> {
+    let (kind, f) = app.ui.shell.dialog.clone().ok_or("no dialog is open")?;
+    let (id, p) = dialog_command(&kind, &f).ok_or_else(|| format!("unknown dialog `{kind}`"))?;
+    let r = crate::menus::invoke(app, ctx, id, p);
+    if r.is_ok() {
+        app.ui.shell.dialog = None;
+    }
+    r
 }
 
 /// Draws the Modifier Keys panel and the open dialog.
@@ -316,13 +359,7 @@ pub fn windows(app: &mut PhotocraftApp, ctx: &egui::Context) {
 fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let Some((kind, mut f)) = app.ui.shell.dialog.clone() else { return };
     let t = Tokens::get(ctx);
-    let title = match kind.as_str() {
-        "newWorkspace" => "New Workspace",
-        "deleteWorkspace" => "Delete Workspace",
-        "customPar" => "Save Pixel Aspect Ratio",
-        "preview32" => "32-bit Preview Options",
-        _ => "Show Extras Options",
-    };
+    let title = title(&kind);
     let names: Vec<String> = app.session.prefs().workspaces.keys().cloned().collect();
     let mut result: Option<bool> = None;
     egui::Window::new(title).id(egui::Id::new("shell-dialog")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).show(
@@ -396,21 +433,7 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     });
                 }
                 _ => {
-                    for (k, label) in [
-                        ("layerEdges", tl!("Layer Edges")),
-                        ("selectionEdges", tl!("Selection Edges")),
-                        ("targetPath", tl!("Target Path")),
-                        ("notes", tl!("Notes")),
-                        ("pixelGrid", tl!("Pixel Grid")),
-                        ("slices", tl!("Slices")),
-                        ("count", tl!("Count")),
-                        ("smartGuides", tl!("Smart Guides")),
-                        ("brushPreview", tl!("Brush Preview")),
-                        ("mesh", tl!("Mesh")),
-                        ("editPins", tl!("Edit Pins")),
-                        ("canvasGuides", tl!("Canvas Guides")),
-                        ("artboardGuides", tl!("Artboard Guides")),
-                    ] {
+                    for (k, label) in extras_options() {
                         check(ui, &mut f, k, label);
                     }
                 }
@@ -434,15 +457,10 @@ fn dialog(app: &mut PhotocraftApp, ctx: &egui::Context) {
     );
     match result {
         Some(true) => {
-            if let Some((id, p)) = dialog_command(&kind, &f) {
-                match crate::menus::invoke(app, ctx, id, p) {
-                    Ok(_) => app.ui.shell.dialog = None,
-                    Err(e) => {
-                        app.ui.status = e;
-                        app.ui.status_error = true;
-                        app.ui.shell.dialog = Some((kind, f));
-                    }
-                }
+            app.ui.shell.dialog = Some((kind, f));
+            if let Err(e) = confirm(app, ctx) {
+                app.ui.status = e;
+                app.ui.status_error = true;
             }
         }
         Some(false) => app.ui.shell.dialog = None,
@@ -551,6 +569,31 @@ mod tests {
         assert!(!app.ui.view.show.count);
         assert!(inv(&mut app, "view.show.showExtrasOptions", json!({"bogus": true})).is_err());
         crate::analysis_ui::tests::render(&mut app, &ctx, windows);
+    }
+
+    #[test]
+    fn extras_options_checkboxes_show_and_change_every_flag() {
+        let (mut app, ctx) = app();
+        let before = serde_json::to_value(app.ui.view.show).unwrap();
+        crate::menus::invoke(&mut app, &ctx, "view.show.showExtrasOptions", json!({})).unwrap();
+        let (kind, mut f) = app.ui.shell.dialog.clone().unwrap();
+        // Every checkbox reads the seeded value of its flag (Selection Edges is on by default).
+        assert_eq!(extras_options().len(), f.len());
+        for (k, _) in extras_options() {
+            assert!(before[k].is_boolean(), "{k} is not a Show field");
+            assert_eq!(f.get(k).and_then(Value::as_bool), before[k].as_bool(), "{k}");
+        }
+        // Ticking every box (one- and multi-word flags in one submission) applies them all on OK.
+        for (k, _) in extras_options() {
+            let on = !f.get(k).and_then(Value::as_bool).unwrap();
+            f.insert(k.into(), json!(on));
+        }
+        let (id, p) = dialog_command(&kind, &f).unwrap();
+        crate::menus::invoke(&mut app, &ctx, id, p).unwrap();
+        let after = serde_json::to_value(app.ui.view.show).unwrap();
+        for (k, _) in extras_options() {
+            assert_eq!(after[k].as_bool(), before[k].as_bool().map(|b| !b), "{k}");
+        }
     }
 
     #[test]

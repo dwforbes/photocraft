@@ -21,6 +21,10 @@
 	Layer	Ebene
 	Type	Text
 	Select	Auswahl
+	Top Left	Oben links
+	Top Right	Oben rechts
+	Bottom Left	Unten links
+	Bottom Right	Unten rechts
 	Filter	Filter
 	View	Ansicht
 	Window	Fenster
@@ -103,6 +107,7 @@
 	Fill…	Füllen…
 	Stroke…	Nachziehen…
 	Content-Aware Fill…	Inhaltsbasiert füllen…
+	Delete and Fill Selection	Auswahl löschen und füllen
 	Content-Aware Scale	Inhaltsbasiert skalieren
 	Puppet Warp	Marionetten-Verkrümmung
 	Perspective Warp	Perspektivisch verkrümmen
@@ -367,10 +372,10 @@
 	Add Layer Below to Selection	Ebene darunter zur Auswahl hinzufügen
 	Stamp Down	Nach unten stempeln
 	Flatten Image	Bild auf eine Ebene reduzieren
-	Matting	Mattierung
+	Matting	Randbereinigung
 	Color Decontaminate…	Farbreinigung…
-	Remove Black Matte	Schwarze Mattierung entfernen
-	Remove White Matte	Weiße Mattierung entfernen
+	Remove Black Matte	Schwarzen Farbsaum entfernen
+	Remove White Matte	Weißen Farbsaum entfernen
 	Defringe…	Randstörungen entfernen…
 	Group Layers	Ebenen gruppieren
 	Ungroup Layers	Ebenengruppe auflösen
@@ -431,7 +436,7 @@
 	Contextual Alternates	Kontextuelle Alternativen
 	Discretionary Ligatures	Optionale Ligaturen
 	Swash	Swash
-	Oldstyle	Mediäval
+	Oldstyle	Mediävalziffern
 	Stylistic Alternates	Stilistische Alternativen
 	Titling Alternates	Titel-Alternativen
 	Ornaments	Ornamente
@@ -644,8 +649,8 @@
 	4-up	4-fach
 	6-up	6-fach
 	Consolidate All to Tabs	Alle in Registerkarten zusammenfassen
-	Float in Window	Im Fenster schweben
-	Float All in Windows	Alle in Fenstern schweben
+	Float in Window	In Fenster schweben lassen
+	Float All in Windows	Alle in Fenstern schweben lassen
 	New Window for Document	Neues Fenster für Dokument
 	Workspace	Arbeitsbereich
 	Essentials	Essentials
@@ -707,13 +712,13 @@
 	Other…	Weitere…
 	Remove Warp Split	Verkrümmungsteilung entfernen
 	Shape	Form
-	Split Warp Crosswise	Verkrümmung quer teilen
+	Split Warp Crosswise	Verkrümmung kreuzweise teilen
 	Split Warp Horizontally	Verkrümmung horizontal teilen
 	Split Warp Vertically	Verkrümmung vertikal teilen
 	Statistics…	Statistiken…
 @plural	{n} item|{n} items	{n} Element|{n} Elemente
 	Auto	Automatisch
-	(print to the printer)	(auf den Drucker drucken)
+	(print to the printer)	(an den Drucker senden)
 	+ Add variable	+ Variable hinzufügen
 	30 frames @ 30 fps	30 Frames @ 30 fps
 	3D LUT File	3D-LUT-Datei
@@ -724,7 +729,7 @@
 	Adaptive Wide Angle isn't open	Adaptiver Weitwinkel ist nicht geöffnet
 	Add	Hinzufügen
 	Add Layer Mask	Ebenenmaske hinzufügen
-	Add Stop	Stopp hinzufügen
+	Add Stop	Farbstopp hinzufügen
 	Add a layer style	Ebenenstil hinzufügen
 	Add a mask  (from the selection; {key} inverts)	Maske hinzufügen  (aus der Auswahl; {key} kehrt um)
 	Add an adjustment	Anpassung hinzufügen
@@ -786,10 +791,10 @@
 	Bilinear	Bilinear
 	Black	Schwarz
 	Black & White	Schwarzweiß
-	Black Point Compensation	Tiefpunktkompensation
+	Black Point Compensation	Tiefenkompensierung
 	Black, White	Schwarz, Weiß
 	Blacks	Schwarz
-	Blending	Fusionieren
+	Blending	Überblenden
 	Blending Options	Fusionsoptionen
 	Blue	Blau
 	Blue, Red, Yellow	Blau, Rot, Gelb
@@ -806,6 +811,7 @@
 	Cache Level:	Cache-Stufe:
 	Camera Raw isn't open	Camera Raw ist nicht geöffnet
 	Cancel	Abbrechen
+	Reset	Zurücksetzen
 	Cancel (Esc)	Abbrechen (Esc)
 	Cancel any current edits (Esc)	Aktuelle Bearbeitungen abbrechen (Esc)
 	Cancel current crop operation  (Esc)	Aktuelle Freistellung abbrechen  (Esc)
@@ -815,7 +821,7 @@
 	Canvas extension color:	Farbe der Zeichenflächenerweiterung:
 	Capture	Erfassen
 	Capture the visibility, position and style of every layer with + below, then switch between versions.	Erfasse Sichtbarkeit, Position und Stil jeder Ebene mit + unten, und wechsle dann zwischen Versionen.
-	Catch-up on Stroke End	Auf Strichende aufholen
+	Catch-up on Stroke End	Am Strichende nachführen
 	Center	Mitte
 	Center Crop Marks	Mittige Beschnittmarken
 	Center text	Text zentrieren
@@ -840,11 +846,11 @@
 	Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out	Klicken vergrößert  ·  {key}-Klick verkleinert  ·  nach rechts/links ziehen zoomt rein/raus
 	Click with the Note tool to add a note.	Klicke mit dem Notiz-Werkzeug, um eine Notiz hinzuzufügen.
 	Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel	Klick: Ecke · Ziehen: weich · Ersten Punkt klicken: schließen · {key} fertig · Esc abbrechen
-	Clip to layer below	Auf die Ebene darunter beschneiden
+	Clip to layer below	Auf darunterliegende Ebene begrenzen
 	Clipped	Beschnitten
 	Close Style Options	Stiloptionen schließen
 	Cmd	Cmd
-	Coated CMYK	Gestrichenes CMYK
+	Coated CMYK	CMYK für gestrichenes Papier
 	Color & Swatches	Farbe & Farbfelder
 	Color Balance	Farbbalance
 	Color Detail	Farbdetails
@@ -972,11 +978,14 @@
 	Draw with the Pen tool (P) or make a work path from a selection.	Zeichne mit dem Stift-Werkzeug (P) oder erzeuge einen Arbeitspfad aus einer Auswahl.
 	Drop an image or PSD anywhere to open it.	Ziehe ein Bild oder PSD an eine beliebige Stelle, um es zu öffnen.
 	Native file drag-and-drop is unavailable	Natives Ziehen und Ablegen von Dateien ist nicht verfügbar
-	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or run PhotoCraft under XWayland with `WAYLAND_DISPLAY= photocraft`.	Natives Ziehen und Ablegen von Dateien wird unter Wayland noch nicht unterstützt. Nutze Datei › Öffnen oder starte PhotoCraft unter XWayland mit `WAYLAND_DISPLAY= photocraft`.
+	Native file drag-and-drop is not supported on Wayland yet. Use File › Open, or copy the image in your file manager and paste it with {paste}.	Natives Ziehen und Ablegen von Dateien wird unter Wayland noch nicht unterstützt. Nutze Datei › Öffnen oder kopiere das Bild im Dateimanager und füge es mit {paste} ein.
+	To drop files, start PhotoCraft under XWayland: `{command}`	Um Dateien abzulegen, starte PhotoCraft unter XWayland: `{command}`
+	Or set Preferences › Performance › Linux display server to X11: PhotoCraft then always starts under XWayland.	Oder stelle Voreinstellungen › Leistung › Linux-Anzeigeserver auf X11: PhotoCraft startet dann immer unter XWayland.
+	Edit › Paste	Bearbeiten › Einfügen
 	Duplicate Layers…	Ebenen duplizieren…
 	Duplicate style	Stil duplizieren
 	Edit Toolbar…	Werkzeugleiste bearbeiten…
-	Use File › Open to open an image.	Nutze Datei › Öffnen, um ein Bild zu öffnen.
+	Use File › Open, or paste a copied image with {paste}.	Nutze Datei › Öffnen oder füge ein kopiertes Bild mit {paste} ein.
 	Edit in Quick Mask Mode  (Q)	Im Schnellmaskenmodus bearbeiten  (Q)
 	Edit in Standard Mode  (Q)	Im Standardmodus bearbeiten  (Q)
 	Effects	Effekte
@@ -1011,6 +1020,7 @@
 	Fisheye	Fischauge
 	Fit	Einpassen
 	Fit Screen	Auf Bildschirm einpassen
+	Fill Screen	Bildschirm ausfüllen
 	Fit in View	In Ansicht einpassen
 	Fixed	Fest
 	Fixed Ratio	Festes Verhältnis
@@ -1081,7 +1091,7 @@
 	Invert All	Alle invertieren
 	Invert has no settings.	Invertieren hat keine Einstellungen.
 	Italic	Kursiv
-	Join us on Discord	Tritt uns auf Discord bei
+	Join us on Discord	Tritt unserem Discord bei
 	Justify all	Alles im Blocksatz
 	Justify last centered	Letzte Zeile zentriert
 	Justify last left	Letzte Zeile links
@@ -1137,7 +1147,7 @@
 	Mask Options	Maskenoptionen
 	Masking	Maskieren
 	Master	Gesamt
-	Matte	Mattierung
+	Matte	Hintergrundfarbe
 	Median:	Median:
 	Menus	Menüs
 	Mesh Size	Gitternetzgröße
@@ -1213,7 +1223,7 @@
 	Pattern Size	Mustergröße
 	Pause	Pause
 	Percent	Prozent
-	Perceptual	Wahrnehmung
+	Perceptual	Perzeptiv
 	Perspective Warp is not active	Perspektivische Verkrümmung ist nicht aktiv
 	Perspective Warp: draw planes along the image's perspective, then switch to Warp	Perspektivische Verkrümmung: zeichne Flächen entlang der Bildperspektive, wechsle dann zu Verkrümmen
 	Photo Filter	Foto-Filter
@@ -1241,7 +1251,7 @@
 	Pressure	Druck
 	Pressure for Opacity	Druck für Deckkraft
 	Pressure for Size	Druck für Größe
-	Prevent auto-nesting in and out of Artboards and Frames	Automatisches Einbetten in und aus Zeichenbereichen und Rahmen verhindern
+	Prevent auto-nesting in and out of Artboards and Frames	Automatisches Verschieben in oder aus Zeichenbereichen und Rahmen verhindern
 	Preview	Vorschau
 	Previous frame	Vorheriger Frame
 	Previous note	Vorherige Notiz
@@ -1254,7 +1264,7 @@
 	Promote	Hochstufen
 	Protect Detail	Details schützen
 	Protect Foreground Color	Vordergrundfarbe schützen
-	Protect Tones	Farbtöne schützen
+	Protect Tones	Tonwerte schützen
 	Proximity Match	Umgebungsabgleich
 	Pulled String Mode	Fadenmodus
 	Puppet Warp is not active	Marionetten-Verkrümmung ist nicht aktiv
@@ -1269,7 +1279,7 @@
 	Rate	Rate
 	Recently Used	Zuletzt verwendet
 	Reconstruct	Rekonstruieren
-	Record ● a sequence of edits, then play ▶ it on any document.	Zeichne ● eine Folge von Bearbeitungen auf und gebe sie ▶ auf jedem Dokument wieder.
+	Record ● a sequence of edits, then play ▶ it on any document.	Zeichne ● eine Folge von Bearbeitungen auf und gib sie ▶ auf jedem Dokument wieder.
 	Red	Rot
 	Redefine style by current selection	Stil anhand der aktuellen Auswahl neu definieren
 	Reflected Gradient	Reflektierter Verlauf
@@ -1281,7 +1291,7 @@
 	Remove All Pins	Alle Pins entfernen
 	Remove Background	Hintergrund entfernen
 	Remove Planes	Flächen entfernen
-	Remove stop	Stopp entfernen
+	Remove stop	Farbstopp entfernen
 	Remove variable	Variable entfernen
 	Rename	Umbenennen
 	Rename Group…	Gruppe umbenennen…
@@ -1339,6 +1349,7 @@
 	Set background color	Hintergrundfarbe festlegen
 	Set foreground color	Vordergrundfarbe festlegen
 	Set painting symmetry options	Symmetrieoptionen für das Malen festlegen
+	Symmetry Off	Symmetrie aus
 	Set shape fill type	Fülltyp der Form festlegen
 	Set shape stroke type	Konturtyp der Form festlegen
 	Set the text color	Textfarbe festlegen
@@ -1378,8 +1389,10 @@
 	Strength:	Stärke:
 	Strikethrough	Durchgestrichen
 	Stroke	Kontur
-	Stroke Catch-up	Strich-Aufholen
+	Stroke Catch-up	Strich nachführen
 	Stroke:	Kontur:
+	Location	Position
+	Location:	Position:
 	Style	Stil
 	Style Options	Stiloptionen
 	Style Options…	Stiloptionen…
@@ -1458,6 +1471,9 @@
 	↑↓ navigate   {key} run   esc close	↑↓ Navigieren   {key} Ausführen   Esc Schließen
 	Version {version}	Version {version}
 	New Document	Neues Dokument
+	Save Preset…	Vorgabe speichern…
+	Preset Name	Name der Vorgabe
+	No saved presets yet.	Noch keine gespeicherten Vorgaben.
 	Error	Fehler
 	Command	Befehl
 	Adjustment layers have nothing to transform	Anpassungsebenen haben nichts zu transformieren
@@ -1681,7 +1697,7 @@
 	Do you want to save the changes you made to “{name}” before closing?	Möchtest du die an „{name}“ vorgenommenen Änderungen vor dem Schließen speichern?
 	Doc: {flat}/{layered}	Dok: {flat}/{layered}
 	Scratch: {size}	Auslagerung: {size}
-	Untagged {mode}	Nicht getaggtes {mode}-Profil
+	Untagged {mode}	{mode} ohne Farbprofil
 	Invalid {mode} profile	Ungültiges {mode}-Profil
 	Unnamed {mode} profile	Unbenanntes {mode}-Profil
 	{w} px x {h} px ({ppi} ppi)	{w} px x {h} px ({ppi} ppi)
@@ -1791,12 +1807,14 @@
 	Maximize psd compatibility	PSD-Kompatibilität maximieren
 	Medium gray	Mittelgrau
 	Memory usage mb	Speichernutzung (MB)
+	Low resolution previews	Vorschau in niedriger Auflösung
 	Missing glyph protection	Schutz vor fehlenden Glyphen
 	Modern	Modern
 	Nearest neighbor	Nächster Nachbar
 	Never	Nie
 	Normal tip	Normale Spitze
 	Open as smart object	Als Smart-Objekt öffnen
+	Open in camera raw	In Camera Raw öffnen
 	Open documents as tabs	Dokumente als Registerkarten öffnen
 	Overscroll	Überscrollen
 	Performance	Leistung
@@ -1820,7 +1838,7 @@
 	Same folder	Gleicher Ordner
 	Save in background	Im Hintergrund speichern
 	Scratch Disks	Auslagerungsfestplatten
-	Screen	Bildschirm
+	Screen	Negativ multiplizieren
 	Screen resolution	Bildschirmauflösung
 	Scrubby slider acceleration	Ziehregler-Beschleunigung
 	Sessions only	Nur Sitzungen
@@ -1834,6 +1852,7 @@
 	Show slice numbers	Slice-Nummern anzeigen
 	Show tooltips	Tooltips anzeigen
 	Show bounding box when dragging layer	Begrenzungsrahmen beim Ziehen einer Ebene anzeigen
+	System title bar	System-Titelleiste
 	Show transformation values	Transformationswerte anzeigen
 	Slice color	Slice-Farbe
 	Smart guide color	Smart-Hilfslinienfarbe
@@ -1884,7 +1903,7 @@
 	Adjustment Preview	Anpassungsvorschau
 	Airbrush: keeps depositing paint while the pointer rests.	Airbrush: legt weiter Farbe ab, solange der Zeiger ruht.
 	Angle:	Winkel:
-	Blend If	Fusionieren wenn
+	Blend If	Farbbereich
 	Close Tab Group	Registerkartengruppe schließen
 	Collapse	Einklappen
 	Collapse All Groups	Alle Gruppen einklappen
@@ -1913,6 +1932,7 @@
 	System Info…	Systeminformationen…
 	System Info	Systeminformationen
 	More panels	Weitere Bedienfelder
+	More documents	Weitere Dokumente
 	These settings aren't available in PhotoCraft yet.	Diese Einstellungen gibt es in PhotoCraft noch nicht.
 	Graphics	Grafik
 	Reset GPU Backend	GPU-Backend zurücksetzen
@@ -1941,6 +1961,8 @@
 	Brush Settings…  (F5): every option of this brush	Pinseleinstellungen…  (F5): jede Option dieses Pinsels
 	Rename Brush…	Pinsel umbenennen…
 	Delete Brush	Pinsel löschen
+	New Brush Preset…	Neue Pinselvorgabe…
+	Brush Preset Options	Pinselvorgaben-Optionen
 	Group name	Gruppenname
 	Brush name	Pinselname
 	Grid view	Rasteransicht
@@ -1982,6 +2004,8 @@
 	CPU (no GPU acceleration)	CPU (keine GPU-Beschleunigung)
 	DirectX 12	DirectX 12
 	GPU backend	GPU-Backend
+	Linux display server	Linux-Anzeigeserver
+	X11	X11
 	Metal	Metal
 	OpenGL	OpenGL
 	Use tablet pressure	Tablettdruck verwenden
@@ -1990,6 +2014,7 @@
 	No path to make a selection from: draw one with the Pen tool or select one in the Paths panel.	Kein Pfad für eine Auswahl vorhanden: zeichne einen mit dem Stift-Werkzeug oder wähle einen im Pfade-Bedienfeld.
 	Cancel opening	Öffnen abbrechen
 	Cancelled opening {name}	Öffnen von {name} abgebrochen
+	Developing {name}	{name} wird entwickelt
 	Cancelled {label}	{label} abgebrochen
 	Esc to cancel	Esc zum Abbrechen
 	Opening {name}	Öffne {name}
@@ -2100,10 +2125,12 @@
 	4 x 4	4 x 4
 	5 x 5	5 x 5
 	Camera Raw Filter ({layer})	Camera-Raw-Filter ({layer})
+	Camera Raw ({name})	Camera Raw ({name})
 	Edit Type	Text bearbeiten
 	Grid:	Raster:
 	Highlight Clipping Warning (O)	Lichter-Abschneidewarnung (O)
 	Lasso around an area, then drag the selection	Lasso um einen Bereich ziehen, dann die Auswahl verschieben
+	Now drag the selection onto another area	Jetzt die Auswahl auf einen anderen Bereich ziehen
 	Patch:	Korrektur:
 	Shadow Clipping Warning (U)	Tiefen-Abschneidewarnung (U)
 	Show Lab Color Readouts	Lab-Farbwerte anzeigen
@@ -2141,6 +2168,7 @@
 	Magnetic Lasso Tool	Magnetisches-Lasso-Werkzeug
 	Frequency	Frequenz
 	Use tablet pressure to change pen width	Tablettdruck zum Ändern der Stiftbreite verwenden
+
 # About ▸ Contributors / Models (credits, craftrules standards/contributors.md)
 	About	Über
 	Contributors	Mitwirkende
@@ -2172,3 +2200,118 @@
 	% of all commits	% aller Commits
 	Lines +/−	Zeilen +/−
 	@{login}: {prs} PRs, {commits} commits, +{added} / −{deleted} lines (Δ {delta}), +{binAdded} / −{binDeleted} binary assets, {first} – {last}	@{login}: {prs} PRs, {commits} Commits, +{added} / −{deleted} Zeilen (Δ {delta}), +{binAdded} / −{binDeleted} Binärdateien, {first} – {last}
+
+# Swatches panel
+	Create new swatch	Neues Farbfeld erstellen
+	New Swatch…	Neues Farbfeld…
+	New Swatch Group…	Neue Farbfeldgruppe…
+	Import Swatches…	Farbfelder importieren…
+	Replace Swatches…	Farbfelder ersetzen…
+	Export Swatches…	Farbfelder exportieren…
+	Export Swatches for Exchange…	Farbfelder für Austausch exportieren…
+	Reset Swatches	Farbfelder zurücksetzen
+	Add to Swatches	Zu Farbfeldern hinzufügen
+# Layer Style > Blending Options (Advanced Blending)
+	Blend If:	Farbbereich:
+	Channels:	Kanäle:
+	Knockout	Aussparung
+	Apply At Canvas Bounds	Effekt an Arbeitsflächenbegrenzungen anwenden
+
+# Shared screen eyedropper and text Color Picker (#1128).
+	Color Picker (Text Color)	Farbwähler (Textfarbe)
+	Pick screen color	Bildschirmfarbe auswählen
+	Sample a pixel anywhere on the screen	Ein Pixel an beliebiger Stelle auf dem Bildschirm auswählen
+	Click to pick · Esc to cancel	Klicken zum Auswählen · Esc zum Abbrechen
+	Pick a screen pixel or press Esc to cancel	Ein Bildschirmpixel auswählen oder mit Esc abbrechen
+	Scroll to zoom	Zum Zoomen scrollen
+	Show/Hide All Panels	Alle Bedienfelder ein-/ausblenden
+	Show/Hide Panels	Bedienfelder ein-/ausblenden
+	Could not open	Öffnen nicht möglich
+	{path}: the path is not valid Unicode; rename the file and open it again.	{path}: Der Dateipfad enthält ungültige Zeichen. Benenne die Datei um und öffne sie erneut.
+
+# Fill dialog, layer style contours and Image Size
+	Contents:	Inhalt:
+	Custom Pattern:	Eigenes Muster:
+	Foreground Color	Vordergrundfarbe
+	Color…	Farbe…
+	50% Gray	50 % Grau
+	{size} (was {old})	{size} (vorher {old})
+	Cone	Kegel
+	Cone (Inverted)	Kegel (umgekehrt)
+	Domed	Gewölbt
+	Domed (Inverted)	Gewölbt (umgekehrt)
+	Diagonal (Descending)	Diagonal (absteigend)
+
+	Red Eye Tool	Rote-Augen-Werkzeug
+	Red Eye	Rote Augen
+	Pupil Size	Pupillengröße
+	Darken Amount	Abdunklungsgrad
+	Click a red pupil to neutralize it	Klick auf die Pupille, um die Rotfärbung zu entfernen.
+	open source	Open Source
+	…and {n} more	…und {n} weitere
+
+	Eyedroppers:	Pipetten:
+	Set Black Point	Schwarzpunkt festlegen
+	Set Neutral Gray Point	Neutralen Graupunkt festlegen
+	Set White Point	Weißpunkt festlegen
+	Unavailable in this color mode	In diesem Farbmodus nicht verfügbar
+	Selection Preview:	Auswahlvorschau:
+	Black Matte	Schwarzer Hintergrund
+	White Matte	Weißer Hintergrund
+
+# Layer colour labels.
+layerLabel	No Color	Keine Farbe
+	Seafoam	Meeresschaum
+	Indigo	Indigo
+	Fuchsia	Fuchsia
+	Violet	Violett
+	Large document: redrawing on the CPU	Großes Dokument: Neuzeichnen auf der CPU
+	This redraw took {seconds} s on the CPU.	Dieses Neuzeichnen auf der CPU dauerte {seconds} s.
+	Edits that change the whole document, such as a layer's blend mode, opacity or visibility, redraw all of it.	Änderungen, die das ganze Dokument betreffen, etwa Füllmethode, Deckkraft oder Sichtbarkeit einer Ebene, zeichnen es vollständig neu.
+	Its layers don't fit the GPU memory budget. Raising Memory usage in Preferences › Performance raises the budget, up to a quarter of this computer's memory.	Die Ebenen passen nicht in das GPU-Speicherbudget. Eine höhere Speichernutzung unter Voreinstellungen › Leistung erhöht das Budget, bis zu einem Viertel des Arbeitsspeichers dieses Computers.
+	The GPU compositor wasn't used: {reason}	Der GPU-Compositor wurde nicht verwendet: {reason}
+cameraRaw	Light	Licht
+fontWeight	Thin	Haarfein
+fontWeight	ExtraLight	Extraleicht
+fontWeight	Light	Leicht
+fontWeight	Regular	Normal
+fontWeight	Medium	Medium
+fontWeight	SemiBold	Halbfett
+fontWeight	Bold	Fett
+fontWeight	ExtraBold	Extrafett
+fontWeight	Black	Sehr fett (Black)
+fontWeight	Italic	Kursiv
+
+# Pattern Stamp tool
+	Pattern Stamp Tool	Musterstempel-Werkzeug
+	Pattern Stamp	Musterstempel
+	Impressionist	Impressionistisch
+	Rotate View	Ansicht drehen
+	Rotate View Tool	Ansicht-drehen-Werkzeug
+	Reset View	Ansicht zurücksetzen
+	Drag around the centre to rotate the view  ·  Shift constrains to 15°	Ansicht drehen: im Bogen ziehen · Umschalt: 15°-Schritte
+
+# Painting symmetry presets.
+	Dual Axis	Duale Achse
+	Diagonal	Diagonal
+	Transform Symmetry	Symmetrie transformieren
+
+# Eyedropper Sample Size and Sample (#1649).
+	Point Sample	1 Pixel
+	3 by 3 Average	3 x 3 Pixel Durchschnitt
+	5 by 5 Average	5 x 5 Pixel Durchschnitt
+	11 by 11 Average	11 x 11 Pixel Durchschnitt
+	31 by 31 Average	31 x 31 Pixel Durchschnitt
+	51 by 51 Average	51 x 51 Pixel Durchschnitt
+	101 by 101 Average	101 x 101 Pixel Durchschnitt
+	Sample Size:	Aufnahmebereich:
+	All Layers No Adjustments	Alle Ebenen ohne Einstellungen
+	Current & Below No Adjustments	Aktuelle und darunter ohne Einstellungen
+	Show Sampling Ring	Aufnahmering anzeigen
+
+# Color Picker warnings
+	Out of gamut for printing: click for the nearest printable colour	Außerhalb des Druckfarbumfangs: Klicken für die nächstliegende druckbare Farbe
+	Not a web colour: click for the nearest web colour	Keine Webfarbe: Klicken für die nächstliegende Webfarbe
+	Color to Alpha…	Farbe zu Alpha…
+	Transparency Threshold	Transparenz-Schwellenwert
+	Opacity Threshold	Deckkraft-Schwellenwert

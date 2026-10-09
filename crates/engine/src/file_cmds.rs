@@ -117,8 +117,15 @@ pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
 /// Extensions the batch commands pick up from a folder.
 const OPENABLE: &[&str] = &[
     "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "jxl", "heic",
-    "heif", "hif", "avif", "dng", "cr2", "nef", "nrw", "arw", "pef",
+    "heif", "hif", "avif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign", "afphoto", "afpub",
 ];
+
+/// Whether saving `doc` as a TIFF writes Photoshop layer data (anything beyond a lone
+/// Background layer). The UI asks before such a save when the "ask before saving layered TIFF"
+/// preference is on; see `photocraft_io::tiff_layers`.
+pub fn tiff_would_write_layers(doc: &Document) -> bool {
+    photocraft_io::tiff_layers::would_write_layers(doc)
+}
 
 pub(crate) fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
@@ -178,7 +185,15 @@ pub(crate) fn sanitize(name: &str) -> String {
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
-    photocraft_io::import(name, bytes).map(|r| r.document).map_err(|e| EngineError::Other(format!("{name}: {e}")))
+    let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
+    // Open has its own warning-preserving path; never silently place or process a thumbnail.
+    if r.preview_only {
+        return Err(EngineError::Other(format!(
+            "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
+        )));
+    }
+    Ok(r.document)
 }
 
 /// What a headless save writes beyond the format: JPEG quality and TIFF layers.
@@ -344,7 +359,10 @@ pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&
         }
     };
     // Color Settings policies (preserve / convert / discard the embedded profile).
-    let (i, color) = s.open_document(doc, path);
+    let (i, color) = s.open_document(doc, path.filter(|_| !r.source_read_only));
+    if let Some(st) = s.active_mut() {
+        st.source_read_only = r.source_read_only;
+    }
     // Import notes (e.g. how a camera raw was developed, or that only its preview opened).
     Ok(json!({"document": i, "color": color, "warnings": r.warnings}))
 }
@@ -368,6 +386,7 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
     let fmt = d.doc.pixel_format();
+    let vector = photocraft_io::svg::is_svg(&bytes);
     let src = import(name, &bytes)?;
     let (w, h) = (src.size.width as f64, src.size.height as f64);
     let scale = match f64_param(p, "scale") {
@@ -389,7 +408,11 @@ pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<S
         Some(path) => SmartSource::Linked { path },
         None => SmartSource::Embedded { file_name: file_name(name), bytes: Arc::new(bytes) },
     };
-    let so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+    let mut so = SmartObject::new(source, Affine { m: [scale, 0.0, 0.0, scale, dx, dy] }, Some(px));
+    // A vector source (SVG) renders at its placement scale instead of as a resampled raster.
+    if vector && let Some(sharp) = crate::smart_cmds::render(&d.doc, &so)? {
+        so.cache = Some(sharp);
+    }
     let layer_name = stem(name);
     let label = if matches!(so.source, SmartSource::Linked { .. }) { "Place Linked" } else { PLACE_EMBEDDED };
     let id = s.edit(label, |doc, active| {
@@ -1112,6 +1135,23 @@ pub fn specs() -> Vec<CommandSpec> {
             has_doc,
             close_others
         ),
+        // The document tab's menu (UI-217-6): the tab's own file in the platform file manager.
+        // Not a Photoshop menu-bar item; enabled when the target document has a saved path.
+        spec!("file.revealInFinder", "Reveal in Finder", &[], None, r##"{"document":index? (default active),"dryRun":bool=false}"##, native_doc, |s, p| {
+            let i = match p.get("document") {
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    .ok_or_else(|| EngineError::BadParams { cmd: "file.revealInFinder".into(), msg: "`document` must be an index".into() })?,
+                None => s.active_index().ok_or(EngineError::NoDocument)?,
+            };
+            let path = s
+                .documents()
+                .get(i)
+                .and_then(|d| d.path.clone())
+                .ok_or_else(|| EngineError::BadParams { cmd: "file.revealInFinder".into(), msg: format!("document {i} has no saved file") })?;
+            crate::layer_menu_cmds::reveal(&path, p.get("dryRun").and_then(Value::as_bool).unwrap_or(false))
+        }),
         spec!("file.revert", "Revert", &["File"], Some("F12"), "{} (reloads the saved file as one undoable step)", can_revert, |s, _| revert(s)),
         spec!(
             "file.saveACopy",

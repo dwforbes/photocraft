@@ -104,6 +104,16 @@ pub fn engine_data(text: &Descriptor) -> Option<E> {
     }
 }
 
+/// Whether the text engine of a `TySh` block has nothing to draw: its EngineData text
+/// (`EngineDict/Editor/Text`, what Photoshop lays out) is present and only whitespace. Some
+/// Photoshop layers carry their characters only in the descriptor's `Txt ` and render nothing.
+pub fn engine_text_is_blank(tysh: &[u8]) -> bool {
+    parse_tysh(tysh)
+        .and_then(|t| engine_data(&t.text))
+        .and_then(|e| e.path(&["EngineDict", "Editor", "Text"]).and_then(E::as_str).map(|s| s.trim().is_empty()))
+        .unwrap_or(false)
+}
+
 /// Parses the document's `Txt2` block (Photoshop's text engine data for all type layers).
 pub fn parse_txt2(data: &[u8]) -> Option<E> {
     // Txt2 is a bare sequence of `/key value` pairs (no enclosing `<< >>`).
@@ -221,8 +231,55 @@ pub fn text_layer_from_tysh(data: &[u8], dpi: f32) -> Option<TextLayer> {
     } else {
         layer.text = txt.unwrap_or_default().replace('\r', "\n");
     }
+    // Some legacy PSDs store point text at a large local origin even though PointBase is zero.
+    // Their transform maps that origin onto the canvas, but maps our zero-based layout far away.
+    // Move the imported layout to the descriptor's ink origin so editing, engine commands, and
+    // writing the TySh all agree on the visible position (#1469).
+    if let Some([x, y]) = legacy_point_origin(&t) {
+        let [a, b, c, d, e, f] = layer.transform.m;
+        layer.transform.m = [a, b, c, d, a * x + c * y + e, b * x + d * y + f];
+    }
     layer.sync_summary();
     Some(layer)
+}
+
+/// The local origin to fold into a legacy point-text transform, if present.
+///
+/// Photoshop normally keeps point text close to its PointBase. The affected legacy files instead
+/// use a zero PointBase plus a very large `boundingBox` origin, with an equally remote transform
+/// translation that cancels it out. Do not apply this to ordinary point text: its transform origin
+/// is already the layout origin, and shifting it by the ink bounds would move the layer.
+fn legacy_point_origin(t: &TySh) -> Option<[f64; 2]> {
+    let e = engine_data(&t.text)?;
+    let point_base = e
+        .path(&["EngineDict", "Rendered", "Shapes", "Children"])
+        .and_then(E::as_array)
+        .and_then(|children| children.first())
+        .and_then(|shape| shape.path(&["Cookie", "Photoshop", "PointBase"]))
+        .and_then(E::as_array)?;
+    let [px, py] = point_base else { return None };
+    if px.as_f64() != Some(0.0) || py.as_f64() != Some(0.0) {
+        return None;
+    }
+    let bounds = descriptor_rect(&t.text, "boundingBox")?;
+    let [a, b, c, d, e, f] = t.transform.m;
+    let values = [a, b, c, d, e, f, bounds[0], bounds[1]];
+    if !values.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let shifted = [a * bounds[0] + c * bounds[1] + e, b * bounds[0] + d * bounds[1] + f];
+    let origin_distance = e.abs().max(f.abs());
+    let shifted_distance = shifted[0].abs().max(shifted[1].abs());
+    // A local bounding-box origin in the thousands and a transform origin beyond a normal canvas
+    // are the signature of this old writer. Requiring that the bounding-box origin is closer to
+    // the document prevents applying the correction again after export/import.
+    (bounds[0].abs().max(bounds[1].abs()) > 1024.0 && origin_distance > 4096.0 && shifted_distance < origin_distance).then_some([bounds[0], bounds[1]])
+}
+
+fn descriptor_rect(text: &Descriptor, key: &str) -> Option<[f64; 4]> {
+    let D::Descriptor(rect) = text.get(key)? else { return None };
+    let bounds = [dnum(rect.get("Left"))?, dnum(rect.get("Top "))?, dnum(rect.get("Rght"))?, dnum(rect.get("Btom"))?];
+    (bounds.iter().all(|v| v.is_finite()) && bounds[2] > bounds[0] && bounds[3] > bounds[1]).then_some(bounds)
 }
 
 pub(crate) fn arr_f(v: Option<&E>) -> Vec<f64> {
@@ -594,6 +651,8 @@ pub(crate) fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
         ("Strikethrough".into(), E::Bool(s.strikethrough)),
         ("Ligatures".into(), E::Bool(s.ligatures)),
         ("DLigatures".into(), E::Bool(s.discretionary_ligatures)),
+        // Photopea lays out edited text without painting it unless its fill is enabled.
+        ("FillFlag".into(), E::Bool(true)),
         ("FillColor".into(), E::Dict(vec![("Type".into(), E::Int(color_type)), ("Values".into(), E::Array(values))])),
     ];
     dict.append(&mut opentype);

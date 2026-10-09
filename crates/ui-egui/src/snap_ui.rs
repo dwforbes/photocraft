@@ -74,9 +74,15 @@ fn build(app: &PhotocraftApp, exclude: &[LayerId], smart: bool) -> SnapTargets {
     if smart { t.filtered(SnapKind::is_smart) } else { t }
 }
 
-/// Union of the selected layers' bounds (what the Move tool drags).
+/// What the Move tool drags: the selection's bounds where its pixels float (`move_ui`), else the
+/// union of the selected layers' bounds.
 fn moving_rect(app: &PhotocraftApp) -> Option<[f64; 4]> {
     let st = app.session.active()?;
+    if crate::move_ui::moves_selected_pixels(app) {
+        let (dx, dy) = photocraft_engine::float_cmds::floating(st).map_or((0, 0), |f| f.offset);
+        let r = st.doc.selection.as_ref()?.content_bounds().translate(dx, dy);
+        return (!r.is_empty()).then(|| [r.x0, r.y0, r.x1, r.y1].map(f64::from));
+    }
     union(st.selected_layers().into_iter().filter_map(|id| layer_rect(&st.doc, id)))
 }
 
@@ -159,10 +165,17 @@ fn begin(app: &mut PhotocraftApp, p: [f64; 2]) {
         let exclude = app.session.active().map(|s| s.selected_layers()).unwrap_or_default();
         moving_rect(app).map(|rect| (Gesture::Move { rect }, exclude))
     } else if tool == Tool::Crop
-        && let Some(rect) = app.ui.crop_rect.filter(|r| crate::crop_ui::hit(*r, p, tol) == crate::crop_ui::Hit::Inside)
+        && let Some(rect) = app.ui.crop_rect.filter(|r| crate::crop_ui::angle(app) == 0.0 && crate::crop_ui::hit(*r, p, tol) == crate::crop_ui::Hit::Inside)
     {
         // Moving the crop frame snaps its edges, like the Move tool's layer bounds.
         Some((Gesture::Move { rect }, Vec::new()))
+    } else if tool == Tool::Crop
+        && (crate::crop_ui::turns_at(app, p)
+            || app.ui.crop_rect.is_some_and(|r| crate::crop_ui::hit_turned(r, crate::crop_ui::angle(app), p, tol) == crate::crop_ui::Hit::Inside))
+    {
+        // Turning the frame, or moving a turned one (its edges don't line up with anything): no
+        // snapping.
+        None
     } else if is_point_tool(tool) {
         Some((Gesture::Point, Vec::new()))
     } else {
