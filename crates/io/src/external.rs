@@ -574,13 +574,18 @@ mod tests {
         assert!(matches!(&missing, Err(RunError::Spawn(m)) if m.contains("couldn't run test")), "{missing:?}");
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    /// `require` runs the tool confined where the system has a sandbox, and refuses where it has
+    /// none: never unconfined.
+    #[cfg(unix)]
     #[test]
-    fn requiring_a_sandbox_where_there_is_none_refuses_to_run() {
+    fn requiring_a_sandbox_confines_or_refuses() {
         let job = TempDir::new().unwrap();
         let r = command("test", Path::new("/bin/cat"), &job.path, Profile::Tool, SandboxPolicy::Require);
-        assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("sandbox")), "{:?}", r.err());
-        assert!(!sandbox_available());
+        if sandbox_available() {
+            assert!(r.is_ok_and(|t| t.confined), "{:?}", sandbox_mechanism());
+        } else {
+            assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("sandbox")), "{:?}", r.err());
+        }
     }
 
     #[cfg(target_os = "macos")]

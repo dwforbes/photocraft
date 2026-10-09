@@ -98,11 +98,23 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
     let timeout = external::timeout_for(img);
     // A JPEG XL file is never much larger than the raw pixels; more output is a misbehaving program.
     let out_cap = u64::try_from(img.data().len()).unwrap_or(u64::MAX).saturating_mul(2).saturating_add(1 << 20);
-    let (bytes, confined) = match piped(tool, external::png(img, opts)?, opts, timeout, out_cap) {
+    // A cjxl that once failed to take its input on a pipe (libjxl 0.7 opens "-" as a file name)
+    // goes straight to files for the rest of the session.
+    static NO_PIPES: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+    let no_pipes = |path: &std::path::Path| NO_PIPES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|p| p == path);
+    let piping = if no_pipes(&tool.path) { Err(RunError::Failed(String::new())) } else { piped(tool, external::png(img, opts)?, opts, timeout, out_cap) };
+    let (bytes, confined) = match piping {
         Ok(done) => done,
         // A program that can't start, or that ran out of time, would do the same again.
         Err(RunError::Spawn(e) | RunError::Timeout(e)) => return Err(IoError::Unsupported(e)),
-        Err(RunError::Failed(_)) => through_files(tool, external::png(img, opts)?, opts, timeout)?,
+        Err(RunError::Failed(_)) => {
+            let done = through_files(tool, external::png(img, opts)?, opts, timeout)?;
+            // Files worked where the pipe didn't: this cjxl can't pipe.
+            if !no_pipes(&tool.path) {
+                NO_PIPES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(tool.path.clone());
+            }
+            done
+        }
     };
     warnings.insert(0, external::tool_note("JPEG XL", "written", "cjxl", confined));
     Ok((bytes, warnings))
@@ -214,10 +226,18 @@ mod tests {
         let opts = EncodeOptions::default();
         let t = std::time::Duration::from_secs(60);
         let decoded = |bytes: &[u8]| photocraft_codecs::decode(bytes).unwrap();
-        for version in [found.version, (0, 7, 0)] {
-            let (bytes, confined) = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
-            assert_eq!(confined, crate::tool_sandbox().is_some());
-            assert_eq!(decoded(&bytes).data(), img.data(), "lossless through pipes ({version:?})");
+        // Piping is checked on the versions verified to read standard input (libjxl 0.7 opens "-"
+        // as a file name); on any version the export itself must work, through files if need be.
+        if found.version >= (0, 12, 0) {
+            for version in [found.version, (0, 7, 0)] {
+                let (bytes, confined) = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
+                assert_eq!(confined, crate::tool_sandbox().is_some());
+                assert_eq!(decoded(&bytes).data(), img.data(), "lossless through pipes ({version:?})");
+            }
+        }
+        for _ in 0..2 {
+            let (bytes, notes) = encode_with(found, &img, &opts).unwrap();
+            assert_eq!(decoded(&bytes).data(), img.data(), "{notes:?}");
         }
         let (bytes, confined) = through_files(found, external::png(&img, &opts).unwrap(), &opts, t).unwrap();
         assert_eq!(confined, crate::tool_sandbox().is_some());
