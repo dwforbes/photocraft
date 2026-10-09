@@ -24,7 +24,7 @@ use photocraft_codecs::{EncodeOptions, Format, Image};
 
 use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::external::{self, TempDir, run};
+use crate::external::{self, Profile, TempDir, run};
 
 /// The program that writes HEIC and AVIF.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +194,8 @@ pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOpt
     let program = match tool {
         Encoder::HeifEnc { path, .. } | Encoder::Sips { path } => path,
     };
-    let mut cmd = std::process::Command::new(program);
+    let profile = if matches!(tool, Encoder::Sips { .. }) { Profile::SystemImaging } else { Profile::Tool };
+    let (mut cmd, _) = external::command(tool.name(), program, &dir.path, profile, external::sandbox_policy())?;
     cmd.args(arguments(tool, format, &input, &output, sixteen_bit, opts));
     run(tool.name(), &mut cmd, None, external::timeout_for(img), 1 << 20)?;
     let bytes = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("{} didn't write the {name} file: {e}", tool.name())))?;
@@ -225,16 +226,17 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Imag
     let dir = TempDir::new()?;
     let input = dir.write(if format == Format::Avif { "in.avif" } else { "in.heic" }, bytes)?;
     let output = dir.path.join("out.png");
-    let mut cmd = match tool {
+    // The file is untrusted: the tool is confined to its job folder (see `external`).
+    let (mut cmd, confined) = match tool {
         Decoder::HeifDec { path } => {
-            let mut c = std::process::Command::new(path);
+            let (mut c, confined) = external::command(tool.name(), path, &dir.path, Profile::Tool, external::sandbox_policy())?;
             c.arg(&input).arg(&output);
-            c
+            (c, confined)
         }
         Decoder::Sips { path } => {
-            let mut c = std::process::Command::new(path);
+            let (mut c, confined) = external::command(tool.name(), path, &dir.path, Profile::SystemImaging, external::sandbox_policy())?;
             c.args(["-s", "format", "png"]).arg(&input).arg("--out").arg(&output);
-            c
+            (c, confined)
         }
     };
     // Decoding is quicker than encoding; the size isn't known yet, so allow for a large photo.
@@ -242,7 +244,7 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Imag
     let png = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("{} didn't decode the {name} file: {e}", tool.name())))?;
     // The default decode turns the pixels upright from the PNG's EXIF Orientation (see the module docs).
     let mut img = photocraft_codecs::decode_as(Format::Png, &png)?;
-    let mut warnings = vec![format!("{name} opened with {}", tool.name())];
+    let mut warnings = vec![format!("{name} opened with {}{}", tool.name(), if confined { " (sandboxed)" } else { "" })];
     if img.icc.is_none() && !img.layout().is_gray() {
         match nclx(bytes).map(profile_for) {
             Some(Ok(Some(profile))) => img.icc = Some(profile),

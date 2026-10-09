@@ -9,8 +9,8 @@
 //!
 //! The PNG goes to `cjxl`'s standard input and the JPEG XL file comes back on its standard output
 //! (`cjxl - -`, supported since libjxl 0.6), so nothing is written to disk. Before 0.12, `cjxl`
-//! read a file named `-` in its working folder instead of standard input when one existed, so
-//! older versions run in an empty private folder. If the piped run fails, it is retried once with
+//! read a file named `-` in its working folder instead of standard input when one existed; it
+//! runs in an empty private folder (its sandbox, see `external`), so none can. If the piped run fails, it is retried once with
 //! temporary files. Memory is the same either way: `cjxl` loads the whole image in both, and the
 //! PNG is freed as soon as `cjxl` has read it (or it has been written to the temporary file).
 //!
@@ -26,7 +26,7 @@ use photocraft_codecs::{EncodeOptions, Image};
 
 use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::external::{self, RunError, TempDir, run};
+use crate::external::{self, Profile, RunError, TempDir, run};
 
 /// libjxl's `cjxl` as found on this system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +39,6 @@ pub struct Cjxl {
 /// The oldest libjxl whose `cjxl` takes the flags used here (`-d`, `-q`, `-e`, PNG input, `-`
 /// for standard input and output).
 pub const MIN_VERSION: (u32, u32, u32) = (0, 7, 0);
-
-/// From this version `cjxl` reads standard input for `-` even when a file named `-` exists.
-#[cfg(not(target_arch = "wasm32"))]
-const STDIN_FIXED: (u32, u32, u32) = (0, 12, 0);
 
 /// `cjxl`, if it is installed and recent enough (looked for once per session).
 #[cfg(not(target_arch = "wasm32"))]
@@ -119,13 +115,12 @@ pub(crate) fn encode_with(_: &Cjxl, _: &Image, _: &EncodeOptions) -> Result<Enco
 /// `cjxl - -`: the PNG on standard input, the JPEG XL file on standard output.
 #[cfg(not(target_arch = "wasm32"))]
 fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration, out_cap: u64) -> Result<Vec<u8>, RunError> {
-    let mut cmd = std::process::Command::new(&tool.path);
+    // The job folder stays empty: it is the sandbox's only writable place and the working folder,
+    // where versions before 0.12 would have read a file named `-` instead of standard input.
+    let job = TempDir::new().map_err(|e| RunError::Failed(e.to_string()))?;
+    let (mut cmd, _) =
+        external::command("cjxl", &tool.path, &job.path, Profile::Tool, external::sandbox_policy()).map_err(|e| RunError::Spawn(e.to_string()))?;
     cmd.args(["-", "-"]).args(arguments(opts));
-    // Older versions would read a file named `-` from their working folder: give them an empty one.
-    let empty = if tool.version < STDIN_FIXED { Some(TempDir::new().map_err(|e| RunError::Failed(e.to_string()))?) } else { None };
-    if let Some(dir) = &empty {
-        cmd.current_dir(&dir.path);
-    }
     let bytes = run("cjxl", &mut cmd, Some(png), timeout, out_cap)?;
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(RunError::Failed("cjxl wrote something that isn't a JPEG XL file".into()));
@@ -140,7 +135,7 @@ fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::
     let input = dir.write("in.png", &png)?;
     drop(png);
     let output = dir.path.join("out.jxl");
-    let mut cmd = std::process::Command::new(&tool.path);
+    let (mut cmd, _) = external::command("cjxl", &tool.path, &dir.path, Profile::Tool, external::sandbox_policy())?;
     cmd.arg(&input).arg(&output).args(arguments(opts));
     run("cjxl", &mut cmd, None, timeout, 1 << 20)?;
     let bytes = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("cjxl didn't write the JPEG XL file: {e}")))?;

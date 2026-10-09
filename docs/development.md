@@ -66,6 +66,7 @@ If the device is lost while running (#243), every GPU entry point checks the dev
 | `PHOTOCRAFT_CJXL` | Path to libjxl's `cjxl` for JPEG XL export, or `off` to always use the built-in lossless encoder. Unset: `PATH`, then the usual install folders (Homebrew, MacPorts, WinGet, Scoop). See `crates/io/src/jxl_tool.rs` |
 | `PHOTOCRAFT_HEIF_ENC` | Path to libheif's `heif-enc` (or `/usr/bin/sips`) for HEIC and AVIF export, or `off`. Unset: `heif-enc` on `PATH` and the usual folders, then `sips` on macOS. See `crates/io/src/heif_tool.rs` |
 | `PHOTOCRAFT_HEIF_DEC` | Path to `heif-dec`/`heif-convert` (or `/usr/bin/sips`) for opening AVIF and the HEIC files heic-rs can't, or `off` |
+| `PHOTOCRAFT_TOOL_SANDBOX` | Confinement of those helper tools. Unset: on macOS each runs under `sandbox-exec`, reading only its install folder and the system libraries and writing only its private job folder, with no network (`sips` also gets the user's temporary folder and image services); elsewhere unconfined for now. `require`: refuse to run a tool unconfined. `off`: never confine. See `crates/io/src/external.rs` |
 | `PHOTOCRAFT_THEME_FILE=tokens.json` | **Debug builds only:** live design-token overrides, re-read on change |
 
 ### Live design tokens

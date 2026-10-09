@@ -7,6 +7,15 @@
 //! Tools run directly, never through a shell, with a deadline that grows with the image; both
 //! output pipes are drained while they run, standard output is capped, and a failure passes on the
 //! tool's last line of standard error.
+//!
+//! **Sandbox.** Every tool runs with a minimal environment, in its own private job folder (which
+//! holds its input and output), and on macOS confined by the system sandbox (`sandbox-exec`): it
+//! can read its own install folder and the system libraries, read and write the job folder, and
+//! nothing else: not the user's files, not the network. A malicious file that exploits a C/C++
+//! decoder (libde265, dav1d, ImageIO) can then reach neither. `sips` needs macOS's image services
+//! and writes through the user's temporary folder, so its profile also allows those. The policy
+//! comes from `PHOTOCRAFT_TOOL_SANDBOX`: unset confines tools where the system can (other systems
+//! run them unconfined for now), `require` refuses to run a tool unconfined, `off` never confines.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -113,6 +122,154 @@ pub(crate) fn png(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, IoError>
     Ok(photocraft_codecs::encode(img, photocraft_codecs::Format::Png, &png_opts)?)
 }
 
+/// Whether helper tools are confined (`PHOTOCRAFT_TOOL_SANDBOX`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxPolicy {
+    /// Never confine.
+    Off,
+    /// Confine where the system can; elsewhere run unconfined (the default).
+    Auto,
+    /// Refuse to run a tool that can't be confined.
+    Require,
+}
+
+/// The session's policy, from `PHOTOCRAFT_TOOL_SANDBOX` (`off`, `require`, anything else automatic).
+pub fn sandbox_policy() -> SandboxPolicy {
+    static POLICY: std::sync::OnceLock<SandboxPolicy> = std::sync::OnceLock::new();
+    *POLICY.get_or_init(|| match std::env::var("PHOTOCRAFT_TOOL_SANDBOX").map(|v| v.to_ascii_lowercase()) {
+        Ok(v) if v == "off" || v == "0" => SandboxPolicy::Off,
+        Ok(v) if v == "require" => SandboxPolicy::Require,
+        _ => SandboxPolicy::Auto,
+    })
+}
+
+/// What a confined tool may read beyond its job folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Profile {
+    /// Its own install folder, the package managers' folders and the system libraries: libheif's
+    /// and libjxl's tools.
+    Tool,
+    /// Also macOS's image services and the user's temporary folder, which ImageIO writes
+    /// through: `sips`.
+    SystemImaging,
+}
+
+/// The macOS sandbox profile for `profile`. Paths come in as parameters (`-D`), never spliced
+/// into the text, so no file name can change the rules.
+#[cfg(target_os = "macos")]
+fn sandbox_profile(profile: Profile) -> String {
+    let mut p = String::from(
+        r#"(version 1)
+(deny default)
+(import "system.sb")
+(allow file-read* (literal (param "TOOL")) (subpath (param "TOOL_DIR")) (subpath (param "TOOL_LIB")) (subpath "/opt/homebrew") (subpath "/usr/local") (subpath "/opt/local")
+  (subpath "/bin") (subpath "/usr/bin") (subpath "/usr/lib") (subpath "/System/Library") (subpath "/private/var/db/dyld")
+  (literal "/dev/urandom") (literal "/dev/null"))
+; A wrapper script may start its shell and the real tool: whatever starts here inherits these rules.
+(allow process-exec (literal (param "TOOL")) (subpath (param "TOOL_DIR")) (subpath "/opt/homebrew") (subpath "/usr/local")
+  (subpath "/opt/local") (subpath "/bin") (subpath "/usr/bin"))
+(allow process-fork)
+(allow file-read* file-write* (subpath (param "JOB")))
+(allow sysctl-read)
+"#,
+    );
+    if profile == Profile::SystemImaging {
+        p.push_str(
+            r#"(allow file-read* (subpath "/System") (subpath "/usr/share") (subpath "/Library/Apple") (subpath "/private/var/db"))
+(allow file-read-metadata)
+(allow file-read* file-write* (subpath (param "USER_TEMP")))
+(allow mach-lookup)
+(allow ipc-posix-shm-read* ipc-posix-shm-write-data ipc-posix-shm-write-create)
+(allow iokit-open)
+(allow user-preference-read)
+"#,
+        );
+    }
+    p
+}
+
+/// Whether this system can confine tools: macOS with a working `sandbox-exec` (checked once; it
+/// fails, for one, when PhotoCraft itself runs in a sandbox).
+pub fn sandbox_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        cfg!(target_os = "macos")
+            && run(
+                "sandbox-exec",
+                std::process::Command::new(SANDBOX_EXEC).args(["-p", "(version 1)(allow default)", "/usr/bin/true"]),
+                None,
+                Duration::from_secs(10),
+                1 << 10,
+            )
+            .is_ok()
+    })
+}
+
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// The folders a confined tool may read besides the package managers' and the system's: its own
+/// folder, and for one in a `bin` folder the `lib` next to it (`…/libjxl/bin/cjxl` →
+/// `…/libjxl/lib`). Never the folder above `bin` as a whole: for `/bin/cat` that is the whole
+/// disk, for `~/bin/cjxl` the home folder.
+#[cfg(target_os = "macos")]
+fn tool_dirs(program: &Path) -> (PathBuf, PathBuf) {
+    let dir = program.parent().unwrap_or(program).to_path_buf();
+    let lib = match (dir.file_name(), dir.parent()) {
+        (Some(name), Some(up)) if name == "bin" => up.join("lib"),
+        _ => dir.clone(),
+    };
+    (dir, lib)
+}
+
+/// A command running `program` in the private folder `job` with a minimal environment, confined
+/// to `job` by `profile` when `policy` and the system allow; and whether it is confined. The
+/// caller adds the tool's arguments.
+pub(crate) fn command(name: &str, program: &Path, job: &Path, profile: Profile, policy: SandboxPolicy) -> Result<(std::process::Command, bool), IoError> {
+    // Resolved, so the rules name the real file (Homebrew's `bin` holds symbolic links). Checked
+    // here: inside the sandbox a missing program would only be `sandbox-exec`'s failure.
+    let program = std::fs::canonicalize(program).map_err(|e| IoError::Unsupported(format!("couldn't run {name}: {e}")))?;
+    let job = std::fs::canonicalize(job).map_err(|e| IoError::Unsupported(format!("the tool's folder is missing: {e}")))?;
+    let confine = match policy {
+        SandboxPolicy::Off => false,
+        SandboxPolicy::Auto => sandbox_available(),
+        SandboxPolicy::Require if sandbox_available() => true,
+        SandboxPolicy::Require => {
+            return Err(IoError::Unsupported("helper tools must run in a sandbox (PHOTOCRAFT_TOOL_SANDBOX=require), which this system doesn't provide".into()));
+        }
+    };
+    let mut cmd = if confine { sandboxed(&program, &job, profile)? } else { std::process::Command::new(&program) };
+    cmd.env_clear().env("PATH", "/usr/bin:/bin").env("TMPDIR", &job).current_dir(&job);
+    if cfg!(windows)
+        && let Some(root) = std::env::var_os("SystemRoot")
+    {
+        // Windows programs need these to load their libraries.
+        cmd.env("SystemRoot", root).env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    }
+    Ok((cmd, confine))
+}
+
+#[cfg(target_os = "macos")]
+fn sandboxed(program: &Path, job: &Path, profile: Profile) -> Result<std::process::Command, IoError> {
+    let param = |k: &str, v: &Path| format!("{k}={}", v.display());
+    let mut cmd = std::process::Command::new(SANDBOX_EXEC);
+    cmd.arg("-p").arg(sandbox_profile(profile));
+    let (tool_dir, tool_lib) = tool_dirs(program);
+    cmd.arg("-D").arg(param("TOOL", program)).arg("-D").arg(param("TOOL_DIR", &tool_dir)).arg("-D").arg(param("TOOL_LIB", &tool_lib));
+    cmd.arg("-D").arg(param("JOB", job));
+    if profile == Profile::SystemImaging {
+        // The per-user temporary folder (`/private/var/folders/…/T`), where ImageIO saves through.
+        let temp = std::fs::canonicalize(std::env::temp_dir()).map_err(|e| IoError::Unsupported(format!("no temporary folder: {e}")))?;
+        cmd.arg("-D").arg(param("USER_TEMP", &temp));
+    }
+    cmd.arg(program);
+    Ok(cmd)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn sandboxed(program: &Path, _: &Path, _: Profile) -> Result<std::process::Command, IoError> {
+    Ok(std::process::Command::new(program))
+}
+
 /// Runs `cmd` (the tool `name`, for messages), writing `input` (if any) to its standard input, and
 /// returns its standard output (at most `out_cap` bytes: more is an error). Failing, or running
 /// past `timeout`, is an error; the program is then killed and reaped.
@@ -190,9 +347,10 @@ impl TempDir {
         for _ in 0..8 {
             let name = format!("photocraft-tool-{}-{}-{nanos}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
             let path = std::env::temp_dir().join(name);
-            // `create_dir` fails if it exists, so the folder is ours alone.
+            // `create_dir` fails if it exists, so the folder is ours alone. The path is resolved
+            // (macOS reaches it through `/var` → `/private/var`), so it matches sandbox rules.
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(TempDir { path }),
+                Ok(()) => return Ok(TempDir { path: std::fs::canonicalize(&path).unwrap_or(path) }),
                 Err(e) => last = Some(e),
             }
         }
@@ -262,6 +420,93 @@ mod tests {
         let r = run("sleep", std::process::Command::new("/bin/sleep").arg("30"), None, Duration::from_millis(200), 10);
         assert!(matches!(&r, Err(RunError::Timeout(m)) if m.contains("was stopped")), "{r:?}");
         assert!(t.elapsed() < Duration::from_secs(10));
+    }
+
+    /// Runs `program args` for a job in `job` under `policy`; `Ok(stdout)` when it succeeds.
+    #[cfg(unix)]
+    fn confined(program: &str, args: &[&std::ffi::OsStr], job: &TempDir, policy: SandboxPolicy) -> Result<Vec<u8>, RunError> {
+        let (mut cmd, _) = command("test", Path::new(program), &job.path, Profile::Tool, policy).map_err(|e| RunError::Spawn(e.to_string()))?;
+        cmd.args(args);
+        run("test", &mut cmd, None, Duration::from_secs(20), 1 << 20)
+    }
+
+    /// The sandbox is what stops each of these: with it off, the same command succeeds.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_tool_reaches_only_its_job_folder() {
+        assert!(sandbox_available(), "macOS provides sandbox-exec");
+        let (job, elsewhere) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let inside = job.write("in.txt", b"job data").unwrap();
+        let outside = elsewhere.write("private.txt", b"someone's file").unwrap();
+        for policy in [SandboxPolicy::Auto, SandboxPolicy::Require] {
+            assert_eq!(confined("/bin/cat", &[inside.as_os_str()], &job, policy).unwrap(), b"job data");
+            assert!(confined("/bin/cat", &[outside.as_os_str()], &job, policy).is_err(), "reading outside the job folder");
+            let made = job.path.join("made");
+            assert!(confined("/usr/bin/touch", &[made.as_os_str()], &job, policy).is_ok() && made.exists(), "writing inside it");
+            let planted = elsewhere.path.join("planted");
+            assert!(confined("/usr/bin/touch", &[planted.as_os_str()], &job, policy).is_err() && !planted.exists(), "writing outside");
+            let net = ["-sS", "-m", "5", "-o", "/dev/null", "https://example.com"].map(std::ffi::OsStr::new);
+            assert!(confined("/usr/bin/curl", &net, &job, policy).is_err(), "the network");
+        }
+        // Without the sandbox the same reads and writes succeed: the checks above test the sandbox.
+        assert_eq!(confined("/bin/cat", &[outside.as_os_str()], &job, SandboxPolicy::Off).unwrap(), b"someone's file");
+        let planted = elsewhere.path.join("planted");
+        assert!(confined("/usr/bin/touch", &[planted.as_os_str()], &job, SandboxPolicy::Off).is_ok() && planted.exists());
+    }
+
+    /// `sips`'s wider profile adds the user's temporary folder and system services, not the rest of
+    /// the disk: a file in the build folder stays out of reach.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_imaging_profile_still_keeps_other_files_out() {
+        let job = TempDir::new().unwrap();
+        let probe = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").join(format!("sandbox-probe-{}", std::process::id()));
+        std::fs::write(&probe, b"outside").unwrap();
+        let (mut cmd, confined) = command("test", Path::new("/bin/cat"), &job.path, Profile::SystemImaging, SandboxPolicy::Auto).unwrap();
+        cmd.arg(&probe);
+        let r = run("test", &mut cmd, None, Duration::from_secs(20), 1 << 20);
+        let _ = std::fs::remove_file(&probe);
+        assert!(confined && r.is_err(), "{r:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tool_gets_a_minimal_environment_in_its_job_folder() {
+        let job = TempDir::new().unwrap();
+        for policy in [SandboxPolicy::Off, SandboxPolicy::Auto] {
+            let env = String::from_utf8(confined("/usr/bin/env", &[], &job, policy).unwrap()).unwrap();
+            let mut names: Vec<&str> = env.lines().filter_map(|l| l.split('=').next()).collect();
+            names.sort_unstable();
+            // `sandbox-exec` may add nothing; the shell's own variables are gone either way.
+            assert!(names.iter().all(|n| ["PATH", "TMPDIR", "PWD", "SHLVL", "_"].contains(n)), "{env}");
+            assert!(env.contains(&format!("TMPDIR={}", job.path.display())), "{env}");
+            let pwd = String::from_utf8(confined("/bin/pwd", &[std::ffi::OsStr::new("-P")], &job, policy).unwrap()).unwrap();
+            assert_eq!(pwd.trim(), job.path.to_str().unwrap());
+        }
+        let missing = confined("/nonexistent/tool", &[], &job, SandboxPolicy::Auto);
+        assert!(matches!(&missing, Err(RunError::Spawn(m)) if m.contains("couldn't run test")), "{missing:?}");
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn requiring_a_sandbox_where_there_is_none_refuses_to_run() {
+        let job = TempDir::new().unwrap();
+        let r = command("test", Path::new("/bin/cat"), &job.path, Profile::Tool, SandboxPolicy::Require);
+        assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("sandbox")), "{:?}", r.err());
+        assert!(!sandbox_available());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tool_may_read_its_folder_and_lib_never_what_is_above() {
+        let dirs = |p: &str| {
+            let (d, l) = tool_dirs(Path::new(p));
+            (d.to_string_lossy().into_owned(), l.to_string_lossy().into_owned())
+        };
+        assert_eq!(dirs("/opt/libjxl/bin/cjxl"), ("/opt/libjxl/bin".into(), "/opt/libjxl/lib".into()));
+        assert_eq!(dirs("/bin/cat"), ("/bin".into(), "/lib".into()), "not the whole disk");
+        assert_eq!(dirs("/Users/x/bin/cjxl"), ("/Users/x/bin".into(), "/Users/x/lib".into()), "not the home folder");
+        assert_eq!(dirs("/tools/cjxl"), ("/tools".into(), "/tools".into()));
     }
 
     #[test]

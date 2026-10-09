@@ -72,6 +72,9 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
                     assert_eq!(back.dimensions(), img.dimensions(), "{what}");
                     assert_eq!(back.layout().has_alpha(), alpha, "{what}");
                     assert!(notes.iter().any(|n| n.contains(dec.name())), "{notes:?}");
+                    if cfg!(target_os = "macos") {
+                        assert!(notes.iter().any(|n| n.ends_with("(sandboxed)")), "{notes:?}");
+                    }
                     let d = mean_diff(&img, &back);
                     assert!(d < 0.02, "{what}: mean diff {d}");
                 }
