@@ -124,7 +124,8 @@ pub fn arguments(
             a.push(output.into());
             match opts.heif_quality {
                 Some(q) => a.extend(["-q".into(), q.clamp(1, 100).to_string().into()]),
-                None => a.push("-L".into()),
+                // Spelled out: libheif 1.17's `-L` alone isn't exact (newer ones imply both).
+                None => a.extend(["-L".into(), "--matrix_coefficients=0".into(), "-p".into(), "chroma=444".into()]),
             }
             if sixteen_bit {
                 // 16-bit input keeps the 10 bits HEIC and AVIF decoders commonly read.
@@ -455,7 +456,10 @@ mod tests {
             arguments(t, f, i, o, sixteen, &opts).into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
         };
         assert_eq!(args(&enc, Format::Heif, false, Some(80)), ["/t/in.png", "-o", "/t/out.heic", "-q", "80"]);
-        assert_eq!(args(&enc, Format::Avif, true, None), ["-A", "/t/in.png", "-o", "/t/out.heic", "-L", "-b", "10"]);
+        assert_eq!(
+            args(&enc, Format::Avif, true, None),
+            ["-A", "/t/in.png", "-o", "/t/out.heic", "-L", "--matrix_coefficients=0", "-p", "chroma=444", "-b", "10"]
+        );
         let sips = Encoder::Sips { path: "/usr/bin/sips".into() };
         assert_eq!(args(&sips, Format::Heif, false, Some(0)), ["-s", "format", "heic", "-s", "formatOptions", "1", "/t/in.png", "--out", "/t/out.heic"]);
         assert_eq!(args(&sips, Format::Avif, false, None)[5], "100", "no lossless mode: the best quality");
