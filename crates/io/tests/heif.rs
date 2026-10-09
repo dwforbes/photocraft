@@ -42,7 +42,7 @@ fn heic_metadata_reaches_the_document_and_exports_upright() {
     let d = &r.document;
     assert_eq!((d.size.width, d.size.height), (2048, 1536));
     assert!(d.metadata.exif.is_some() && d.metadata.xmp.as_deref().is_some_and(|x| x.contains("x:xmpmeta")));
-    // HEIC is read-only: save the photo as a JPEG, which keeps the EXIF with Orientation 1.
+    // Save the photo as a JPEG, which keeps the EXIF with Orientation 1.
     let out = export(d, "photo.jpg", &ExportOptions::default()).unwrap();
     assert_eq!(detect(&out.bytes), Some(Format::Jpeg));
     let back = decode(&out.bytes).unwrap();
@@ -51,9 +51,17 @@ fn heic_metadata_reaches_the_document_and_exports_upright() {
 }
 
 #[test]
-fn heic_cannot_be_written_and_says_so() {
+fn heic_is_written_only_through_a_helper_and_says_so() {
     let d = import("x.heic", &strips()).unwrap().document;
-    assert!(export(&d, "x.heic", &ExportOptions::default()).is_err());
+    // PhotoCraft has no HEVC encoder of its own.
+    let own = ExportOptions { external_tools: false, ..ExportOptions::default() };
+    assert!(matches!(export(&d, "x.heic", &own), Err(photocraft_io::IoError::Unsupported(m)) if m.contains("heif-enc")));
+    // With libheif's heif-enc (or macOS sips) installed, it writes a HEIC that opens again.
+    if photocraft_io::heif_tool::encoder().is_some() {
+        let out = export(&d, "x.heic", &ExportOptions::default()).unwrap();
+        assert_eq!(detect(&out.bytes), Some(Format::Heif));
+        assert_eq!(import("x.heic", &out.bytes).unwrap().document.size, d.size);
+    }
 }
 
 #[test]

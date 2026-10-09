@@ -128,6 +128,10 @@ pub struct EncodeOptions {
     /// (libjxl's scale, where 90 is visually lossless). This crate's own encoder is lossless only
     /// and ignores it; `photocraft-io` honours it when libjxl's `cjxl` does the encoding.
     pub jxl_quality: Option<u8>,
+    /// HEIC and AVIF: `Some(q)` writes lossy at quality 1..=100 (the default, 80), `None` lossless.
+    /// Used by `photocraft-io`'s helper tools (libheif's `heif-enc`, macOS `sips`); this crate
+    /// writes no HEIC, and its optional AVIF encoder uses [`Self::jpeg_quality`].
+    pub heif_quality: Option<u8>,
     /// JPEG XL encoder effort 1..=10 (cjxl's `-e`; higher is smaller and slower, 7 is the default).
     pub jxl_effort: u8,
     /// Embed the ICC profile when the format supports it.
@@ -150,6 +154,7 @@ impl Default for EncodeOptions {
             exr_compression: ExrCompression::Zip16,
             jxl_quality: None,
             jxl_effort: 7,
+            heif_quality: Some(80),
             embed_icc: true,
             embed_metadata: true,
         }

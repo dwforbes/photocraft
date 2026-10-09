@@ -61,14 +61,16 @@ pub const ASYMMETRIC_EXCEPTIONS: &[(Format, &str)] = &[
     (
         Format::Avif,
         "AVIF encode uses ravif (pure Rust) but decoding requires dav1d (C); read stays unsupported \
-         until a pure-Rust AV1 decoder is viable. Only enabled with the non-default `avif` feature.",
+         here until a pure-Rust AV1 decoder is viable. Only enabled with the non-default `avif` feature. \
+         photocraft-io opens and writes AVIF through the user's libheif (heif-dec/heif-enc) or macOS sips.",
     ),
     (
         Format::Heif,
         "HEIC decode uses heic-rs (pure Rust, in the optional photocraft-heif crate behind the \
          non-default `heif` feature, which official builds enable), so iPhone and Mac photos open; \
          writing needs an HEVC encoder, and the mature ones (x265, libheif) are C, so write stays \
-         unsupported. Without the feature HEIF is detected but neither read nor written.",
+         unsupported here. Without the feature HEIF is detected but neither read nor written. \
+         photocraft-io writes HEIC (and opens what heic-rs can't) through the user's libheif or macOS sips.",
     ),
 ];
 

@@ -25,6 +25,8 @@
 use photocraft_codecs::{EncodeOptions, Image};
 
 use crate::IoError;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::external::{self, RunError, TempDir, run};
 
 /// libjxl's `cjxl` as found on this system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,14 +55,6 @@ pub fn cjxl() -> Option<&'static Cjxl> {
 #[cfg(target_arch = "wasm32")]
 pub fn cjxl() -> Option<&'static Cjxl> {
     None
-}
-
-/// The version in `cjxl --version`'s first line ("cjxl v0.12.0 …").
-pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
-    let line = text.lines().next()?;
-    let v = line.split_whitespace().find_map(|w| w.strip_prefix('v').filter(|v| v.starts_with(|c: char| c.is_ascii_digit())))?;
-    let mut parts = v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(str::parse::<u32>);
-    Some((parts.next()?.ok()?, parts.next().and_then(Result::ok).unwrap_or(0), parts.next().and_then(Result::ok).unwrap_or(0)))
 }
 
 /// The `cjxl` arguments (after the input and output paths) for these options.
@@ -105,16 +99,14 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
     if opts.embed_metadata && !img.meta.text.is_empty() {
         warnings.push("text metadata not supported; it will be dropped".to_string());
     }
-    // About two minutes, plus time for the slowest efforts on large images.
-    let megapixels = u64::try_from(img.pixel_count() / 1_000_000).unwrap_or(u64::MAX);
-    let timeout = std::time::Duration::from_secs(120u64.saturating_add(megapixels.saturating_mul(20)).min(3600));
+    let timeout = external::timeout_for(img);
     // A JPEG XL file is never much larger than the raw pixels; more output is a misbehaving program.
     let out_cap = u64::try_from(img.data().len()).unwrap_or(u64::MAX).saturating_mul(2).saturating_add(1 << 20);
-    let bytes = match piped(tool, png(img, opts)?, opts, timeout, out_cap) {
+    let bytes = match piped(tool, external::png(img, opts)?, opts, timeout, out_cap) {
         Ok(bytes) => bytes,
         // A program that can't start, or that ran out of time, would do the same again.
         Err(RunError::Spawn(e) | RunError::Timeout(e)) => return Err(IoError::Unsupported(e)),
-        Err(RunError::Failed(_)) => through_files(tool, png(img, opts)?, opts, timeout)?,
+        Err(RunError::Failed(_)) => through_files(tool, external::png(img, opts)?, opts, timeout)?,
     };
     Ok((bytes, warnings))
 }
@@ -122,19 +114,6 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn encode_with(_: &Cjxl, _: &Image, _: &EncodeOptions) -> Result<Encoded, IoError> {
     Err(IoError::Unsupported("cjxl can't run in the browser".into()))
-}
-
-/// The PNG handed to `cjxl`: fast to write, with the profile and metadata the export keeps.
-#[cfg(not(target_arch = "wasm32"))]
-fn png(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, IoError> {
-    let png_opts = EncodeOptions {
-        png_compression: photocraft_codecs::PngCompression::Fast,
-        png_interlaced: false,
-        embed_icc: opts.embed_icc,
-        embed_metadata: opts.embed_metadata,
-        ..EncodeOptions::default()
-    };
-    Ok(photocraft_codecs::encode(img, photocraft_codecs::Format::Png, &png_opts)?)
 }
 
 /// `cjxl - -`: the PNG on standard input, the JPEG XL file on standard output.
@@ -147,7 +126,7 @@ fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Du
     if let Some(dir) = &empty {
         cmd.current_dir(&dir.path);
     }
-    let bytes = run(&mut cmd, Some(png), timeout, out_cap)?;
+    let bytes = run("cjxl", &mut cmd, Some(png), timeout, out_cap)?;
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(RunError::Failed("cjxl wrote something that isn't a JPEG XL file".into()));
     }
@@ -158,12 +137,12 @@ fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Du
 #[cfg(not(target_arch = "wasm32"))]
 fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration) -> Result<Vec<u8>, IoError> {
     let dir = TempDir::new()?;
-    let (input, output) = (dir.path.join("in.png"), dir.path.join("out.jxl"));
-    std::fs::write(&input, &png).map_err(|e| IoError::Unsupported(format!("JPEG XL: couldn't write a temporary file: {e}")))?;
+    let input = dir.write("in.png", &png)?;
     drop(png);
+    let output = dir.path.join("out.jxl");
     let mut cmd = std::process::Command::new(&tool.path);
     cmd.arg(&input).arg(&output).args(arguments(opts));
-    run(&mut cmd, None, timeout, 1 << 20).map_err(|e| IoError::Unsupported(e.to_string()))?;
+    run("cjxl", &mut cmd, None, timeout, 1 << 20)?;
     let bytes = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("cjxl didn't write the JPEG XL file: {e}")))?;
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(IoError::Unsupported("cjxl wrote something that isn't a JPEG XL file".into()));
@@ -173,171 +152,23 @@ fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::
 
 #[cfg(not(target_arch = "wasm32"))]
 fn find() -> Option<Cjxl> {
-    use std::path::PathBuf;
-    let exe = if cfg!(windows) { "cjxl.exe" } else { "cjxl" };
-    if let Some(v) = std::env::var_os("PHOTOCRAFT_CJXL") {
-        let s = v.to_string_lossy();
-        if s.is_empty() || s.eq_ignore_ascii_case("off") || s == "0" {
-            return None;
-        }
-        return probe(&PathBuf::from(v));
+    match external::env_override("PHOTOCRAFT_CJXL") {
+        Some(Some(path)) => probe(&path),
+        Some(None) => None,
+        None => external::candidates("cjxl").into_iter().find_map(|p| probe(&p)),
     }
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    if cfg!(target_os = "macos") {
-        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"].map(PathBuf::from));
-    } else if cfg!(windows) {
-        for (var, sub) in [("ProgramFiles", "libjxl\\bin"), ("LOCALAPPDATA", "Microsoft\\WinGet\\Links"), ("USERPROFILE", "scoop\\shims")] {
-            if let Some(base) = std::env::var_os(var) {
-                dirs.push(PathBuf::from(base).join(sub));
-            }
-        }
-    } else {
-        dirs.extend(["/usr/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from));
-    }
-    dirs.into_iter().map(|d| d.join(exe)).filter(|p| p.is_file()).find_map(|p| probe(&p))
 }
 
 /// `program` as `cjxl`, if `--version` says it is one recent enough.
 #[cfg(not(target_arch = "wasm32"))]
 fn probe(program: &std::path::Path) -> Option<Cjxl> {
-    let out = run(std::process::Command::new(program).arg("--version"), None, std::time::Duration::from_secs(10), 1 << 20).ok()?;
-    let version = parse_version(&String::from_utf8_lossy(&out))?;
+    let version = external::version_of("cjxl", program, &["--version"])?;
     (version >= MIN_VERSION).then(|| Cjxl { path: program.to_path_buf(), version })
-}
-
-/// Why running `cjxl` failed.
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-enum RunError {
-    /// It couldn't be started.
-    Spawn(String),
-    /// It ran past its deadline and was stopped.
-    Timeout(String),
-    /// It failed, or its output was wrong.
-    Failed(String),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for RunError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RunError::Spawn(m) | RunError::Timeout(m) | RunError::Failed(m) => f.write_str(m),
-        }
-    }
-}
-
-/// Runs `cmd`, writing `input` (if any) to its standard input, and returns its standard output
-/// (at most `out_cap` bytes: more is an error). Failing, or running past `timeout`, is an error;
-/// the program is then killed and reaped.
-#[cfg(not(target_arch = "wasm32"))]
-fn run(cmd: &mut std::process::Command, input: Option<Vec<u8>>, timeout: std::time::Duration, out_cap: u64) -> Result<Vec<u8>, RunError> {
-    use std::io::{Read, Write};
-    use std::process::Stdio;
-    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
-    let mut child = cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| RunError::Spawn(format!("couldn't run cjxl: {e}")))?;
-    // The input is written, and both outputs read, on their own threads, so neither side ever
-    // blocks on a full pipe. The writer drops the input (freeing it) and closes the pipe (the end
-    // of input for the program) as soon as it is written; a program that exits early just ends the
-    // write.
-    let writer = match (input, child.stdin.take()) {
-        (Some(data), Some(mut pipe)) => Some(std::thread::spawn(move || {
-            let _ = pipe.write_all(&data);
-        })),
-        _ => None,
-    };
-    let drain = |p: Option<Box<dyn Read + Send>>, cap: u64| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(p) = p {
-                let _ = p.take(cap.saturating_add(1)).read_to_end(&mut buf);
-            }
-            buf
-        })
-    };
-    let out = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), out_cap);
-    let err = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), 1 << 20);
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunError::Timeout(format!("cjxl took longer than {} s and was stopped", timeout.as_secs())));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunError::Failed(format!("waiting for cjxl failed: {e}")));
-            }
-        }
-    };
-    if let Some(w) = writer {
-        let _ = w.join();
-    }
-    let out = out.join().unwrap_or_default();
-    let err = err.join().unwrap_or_default();
-    // Checked first: reading stops at the cap, so a program writing more then fails on its pipe.
-    if out.len() as u64 > out_cap {
-        return Err(RunError::Failed(format!("cjxl wrote more than {out_cap} bytes")));
-    }
-    if !status.success() {
-        let err = String::from_utf8_lossy(&err);
-        let last = err.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("");
-        return Err(RunError::Failed(format!("cjxl failed ({status}){}", if last.is_empty() { String::new() } else { format!(": {last}") })));
-    }
-    Ok(out)
-}
-
-/// A private temporary folder, removed with everything in it when dropped.
-#[cfg(not(target_arch = "wasm32"))]
-struct TempDir {
-    path: std::path::PathBuf,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl TempDir {
-    fn new() -> Result<Self, IoError> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-        let mut last = None;
-        for _ in 0..8 {
-            let name = format!("photocraft-jxl-{}-{}-{nanos}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-            let path = std::env::temp_dir().join(name);
-            // `create_dir` fails if it exists, so the folder is ours alone.
-            match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(TempDir { path }),
-                Err(e) => last = Some(e),
-            }
-        }
-        Err(IoError::Unsupported(format!("JPEG XL: couldn't create a temporary folder: {}", last.map_or_else(String::new, |e| e.to_string()))))
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn versions_parse() {
-        assert_eq!(parse_version("cjxl v0.12.0 0.12.0 [_NEON_BF16_,NEON] {AppleClang 21}\nCopyright"), Some((0, 12, 0)));
-        assert_eq!(parse_version("cjxl v0.8.2 [AVX2]"), Some((0, 8, 2)));
-        assert_eq!(parse_version("cjxl v0.11"), Some((0, 11, 0)));
-        assert_eq!(parse_version("JPEG XL encoder v0.7.0 1234abc"), Some((0, 7, 0)));
-        for bad in ["", "cjxl", "cjxl version", "vx.y", "\n"] {
-            assert_eq!(parse_version(bad), None, "{bad:?}");
-        }
-        assert!((0, 6, 1) < MIN_VERSION && (0, 7, 0) >= MIN_VERSION);
-    }
 
     #[test]
     fn arguments_follow_the_options() {
@@ -374,30 +205,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn input_is_piped_and_output_capped() {
-        let t = std::time::Duration::from_secs(10);
-        let echoed = run(&mut std::process::Command::new("/bin/cat"), Some(b"hello".to_vec()), t, 100).unwrap();
-        assert_eq!(echoed, b"hello");
-        // 1 MB through both pipes: neither side blocks on a full pipe.
-        let big: Vec<u8> = (0..1 << 20).map(|i| (i % 251) as u8).collect();
-        assert_eq!(run(&mut std::process::Command::new("/bin/cat"), Some(big.clone()), t, 2 << 20).unwrap(), big);
-        let r = run(&mut std::process::Command::new("/bin/cat"), Some(big), t, 1000);
-        assert!(matches!(&r, Err(RunError::Failed(m)) if m.contains("more than 1000 bytes")), "{r:?}");
-        // A program that exits without reading its input is no error in itself.
-        assert!(run(&mut std::process::Command::new("/usr/bin/true"), Some(vec![0; 1 << 20]), t, 10).unwrap().is_empty());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_hung_program_is_stopped() {
-        let t = std::time::Instant::now();
-        let r = run(std::process::Command::new("/bin/sleep").arg("30"), None, std::time::Duration::from_millis(200), 10);
-        assert!(matches!(&r, Err(RunError::Timeout(m)) if m.contains("was stopped")), "{r:?}");
-        assert!(t.elapsed() < std::time::Duration::from_secs(10));
-    }
-
     /// The real `cjxl`: piped, as an older version would run (in an empty folder), and the
     /// retry with files when piping fails. Passes with a note when it isn't installed.
     #[cfg(unix)]
@@ -412,10 +219,10 @@ mod tests {
         let t = std::time::Duration::from_secs(60);
         let decoded = |bytes: &[u8]| photocraft_codecs::decode(bytes).unwrap();
         for version in [found.version, (0, 7, 0)] {
-            let bytes = piped(&tool(found.path.to_str().unwrap(), version), png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
+            let bytes = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
             assert_eq!(decoded(&bytes).data(), img.data(), "lossless through pipes ({version:?})");
         }
-        let bytes = through_files(found, png(&img, &opts).unwrap(), &opts, t).unwrap();
+        let bytes = through_files(found, external::png(&img, &opts).unwrap(), &opts, t).unwrap();
         assert_eq!(decoded(&bytes).data(), img.data());
 
         // A cjxl that can't read standard input: the export still works, through files.
@@ -427,15 +234,5 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let (bytes, _) = encode_with(&tool(script.to_str().unwrap(), found.version), &img, &opts).unwrap();
         assert_eq!(decoded(&bytes).data(), img.data());
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn the_temporary_folder_is_removed() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path.clone();
-        std::fs::write(path.join("x"), b"1").unwrap();
-        drop(dir);
-        assert!(!path.exists());
     }
 }

@@ -165,6 +165,8 @@ pub struct ExportSettings {
     pub webp_quality: Option<u8>,
     /// JPEG XL quality 1–100 (lossy, through libjxl's `cjxl` when installed); None = lossless.
     pub jxl_quality: Option<u8>,
+    /// HEIC and AVIF quality 1–100; None = lossless (libheif's `heif-enc`; `sips` writes quality 100).
+    pub heif_quality: Option<u8>,
     /// TIFF: keep the layers (Photoshop layer data); `false` is "Discard Layers and Save a Copy".
     pub tiff_layers: bool,
     /// Embed the document's whole XMP packet. `true` by default (Save As keeps the metadata);
@@ -175,7 +177,15 @@ pub struct ExportSettings {
 
 impl Default for ExportSettings {
     fn default() -> Self {
-        ExportSettings { jpeg_quality: None, webp_lossless: true, webp_quality: None, jxl_quality: None, tiff_layers: true, xmp_all: true }
+        ExportSettings {
+            jpeg_quality: None,
+            webp_lossless: true,
+            webp_quality: None,
+            jxl_quality: None,
+            heif_quality: Some(80),
+            tiff_layers: true,
+            xmp_all: true,
+        }
     }
 }
 

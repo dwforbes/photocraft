@@ -80,7 +80,7 @@ pub struct SaveParams {
     /// Format override as an extension (pcraft, psd, png, jpg, tif, webp, exr, …).
     #[serde(default)]
     pub format: Option<String>,
-    /// JPEG, WebP or JPEG XL quality 1..100. A WebP or JPEG XL saved with a quality is lossy; without one it is lossless.
+    /// JPEG, WebP, JPEG XL, HEIC or AVIF quality 1..100. A WebP or JPEG XL saved with a quality is lossy; without one it is lossless. HEIC and AVIF default to 80.
     #[serde(default)]
     pub quality: Option<u8>,
     /// TIFF: keep the layers (Photoshop layer data). Off by default: a flat TIFF.
@@ -666,6 +666,7 @@ impl PhotocraftMcp {
                     opts.encode.webp_quality = q.clamp(1, 100);
                     opts.encode.webp_lossless = false;
                     opts.encode.jxl_quality = Some(q.clamp(1, 100));
+                    opts.encode.heif_quality = Some(q.clamp(1, 100));
                 }
                 let path = p.path.map(PathBuf::from);
                 h.save(p.index, path.as_deref(), p.format.as_deref(), &opts)

@@ -19,6 +19,8 @@ USAGE:
       TIFF output is flat unless --tiff-layers keeps the layers (Photoshop layer data).
       --quality sets the JPEG, WebP or JPEG XL quality; a WebP or JPEG XL written with a quality is lossy, without one lossless.
       JPEG XL is written by libjxl's cjxl when it is installed (PHOTOCRAFT_CJXL names it, or `off`), else losslessly by the built-in encoder.
+      HEIC and AVIF (quality 80 unless --quality) are written by libheif's heif-enc or macOS sips (PHOTOCRAFT_HEIF_ENC),
+      and AVIF, or HEIC the built-in decoder can't read, are opened with heif-dec or sips (PHOTOCRAFT_HEIF_DEC).
   photocraft-cli info <file> [--compact]
       Print the document as JSON (size, mode, depth, layer tree).
   photocraft-cli run (<file> | --new <json>) --cmd <id> [--params <json>] [--cmd …] [--out <file>] [--format <ext>] [--quality <1-100>] [--tiff-layers]
@@ -178,6 +180,7 @@ fn export_opts(a: &Args) -> Result<ExportOptions, String> {
         o.encode.webp_quality = q;
         o.encode.webp_lossless = false;
         o.encode.jxl_quality = Some(q);
+        o.encode.heif_quality = Some(q);
     }
     Ok(o)
 }

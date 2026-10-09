@@ -77,6 +77,11 @@ the same.
   decodes to RGB. Image sequences, overlays and identity derivations, multilayer HEVC and some
   4:2:2/4:4:4 streams return `CodecError::Unsupported` or `Malformed`, never wrong pixels. Writing
   needs an HEVC encoder and every mature one is C, so HEIF is listed in `ASYMMETRIC_EXCEPTIONS`.
+* **HEIC and AVIF through helper tools.** `photocraft-io` (`heif_tool`) writes both with the
+  user's libheif `heif-enc` or macOS `sips` (8-bit, or 10-bit from 16-bit; lossy at quality 80 by
+  default, lossless with `heif-enc`), and opens AVIF, and HEIC that heic-rs can't (or every HEIC
+  without the `heif` feature), with `heif-dec` or `sips`. This crate itself is unchanged: the
+  exceptions below describe what it does without those tools.
 * **AVIF.** Encoding uses `ravif`, which is pure Rust. Decoding
   needs `dav1d`, which is C. AVIF is therefore read-unsupported, and write support is gated
   behind the non-default `avif` feature. In a default build it is neither readable nor writable,

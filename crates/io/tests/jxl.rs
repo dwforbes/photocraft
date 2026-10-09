@@ -22,7 +22,7 @@ fn max_diff(a: &photocraft_doc::Document, b: &photocraft_doc::Document) -> f32 {
 }
 
 fn built_in() -> ExportOptions {
-    ExportOptions { jxl_use_cjxl: false, ..ExportOptions::default() }
+    ExportOptions { external_tools: false, ..ExportOptions::default() }
 }
 
 /// `cjxl`, or `None` after printing why the test is skipped.

@@ -11,7 +11,13 @@ use crate::state::DialogKind;
 use crate::theme::Tokens;
 use crate::{ExportSettings, PhotocraftApp};
 
-const FORMATS: [(&str, &str); 6] = [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("jxl", "JPEG XL"), ("tif", "TIFF"), ("tga", "TGA")];
+const FORMATS: [(&str, &str); 8] =
+    [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("jxl", "JPEG XL"), ("heic", "HEIC"), ("avif", "AVIF"), ("tif", "TIFF"), ("tga", "TGA")];
+
+/// Formats with a Lossless switch next to Quality.
+fn has_lossless(fmt: &str) -> bool {
+    matches!(fmt, "webp" | "jxl" | "heic" | "avif")
+}
 
 pub fn open(app: &mut PhotocraftApp) -> Result<u64, String> {
     let st = app.session.active().ok_or("no document")?;
@@ -109,6 +115,7 @@ fn settings(f: &Map<String, Value>) -> ExportSettings {
         webp_lossless: fmt != "webp" || lossless(f),
         webp_quality: (fmt == "webp" && !lossless(f)).then_some(quality),
         jxl_quality: (fmt == "jxl" && !lossless(f)).then_some(quality),
+        heif_quality: (!(matches!(fmt.as_str(), "heic" | "avif") && lossless(f))).then_some(if matches!(fmt.as_str(), "heic" | "avif") { quality } else { 80 }),
         xmp_all: s(f, "metadata") == "all",
         ..Default::default()
     }
@@ -142,12 +149,12 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
                 }
             });
             let fmt = s_fmt(f);
-            if fmt == "webp" || fmt == "jxl" {
+            if has_lossless(&fmt) {
                 let mut ll = lossless(f);
                 crate::widgets::checkbox(ui, &mut ll, tl!("Lossless"));
                 f.insert("lossless".into(), json!(ll));
             }
-            if fmt == "jpg" || ((fmt == "webp" || fmt == "jxl") && !lossless(f)) {
+            if fmt == "jpg" || (has_lossless(&fmt) && !lossless(f)) {
                 let mut q = n(f, "quality", 85.0) as f32;
                 crate::widgets::slider_row(ui, tl!("Quality"), &mut q, 1.0..=100.0, "%", None);
                 f.insert("quality".into(), json!(q.round()));
@@ -319,5 +326,21 @@ mod tests {
         f.insert("lossless".into(), json!(false));
         assert_eq!(settings(&f).jxl_quality, None, "other formats leave JPEG XL lossless");
         assert!(FORMATS.iter().any(|(k, l)| *k == "jxl" && *l == "JPEG XL"));
+    }
+
+    #[test]
+    fn heic_and_avif_settings_follow_quality_and_lossless() {
+        let mut f = Map::new();
+        f.insert("quality".into(), json!(65));
+        for fmt in ["heic", "avif"] {
+            f.insert("format".into(), json!(fmt));
+            f.insert("lossless".into(), json!(false));
+            assert_eq!(settings(&f).heif_quality, Some(65), "{fmt}");
+            f.insert("lossless".into(), json!(true));
+            assert_eq!(settings(&f).heif_quality, None, "{fmt}: lossless");
+            assert!(FORMATS.iter().any(|(k, _)| *k == fmt) && has_lossless(fmt));
+        }
+        f.insert("format".into(), json!("png"));
+        assert_eq!(settings(&f).heif_quality, Some(80), "other formats leave the HEIC default alone");
     }
 }

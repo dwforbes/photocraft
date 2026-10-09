@@ -64,6 +64,8 @@ If the device is lost while running (#243), every GPU entry point checks the dev
 | `PHOTOCRAFT_LOCALE` | Override Auto's native UI language for this launch; unsupported tags use English. See [system language detection](localization.md#first-launch-and-system-language). |
 | `PHOTOCRAFT_FX_TRACE=1` | Print the CPU time spent on GPU effect shapes and distance fields per rebuild |
 | `PHOTOCRAFT_CJXL` | Path to libjxl's `cjxl` for JPEG XL export, or `off` to always use the built-in lossless encoder. Unset: `PATH`, then the usual install folders (Homebrew, MacPorts, WinGet, Scoop). See `crates/io/src/jxl_tool.rs` |
+| `PHOTOCRAFT_HEIF_ENC` | Path to libheif's `heif-enc` (or `/usr/bin/sips`) for HEIC and AVIF export, or `off`. Unset: `heif-enc` on `PATH` and the usual folders, then `sips` on macOS. See `crates/io/src/heif_tool.rs` |
+| `PHOTOCRAFT_HEIF_DEC` | Path to `heif-dec`/`heif-convert` (or `/usr/bin/sips`) for opening AVIF and the HEIC files heic-rs can't, or `off` |
 | `PHOTOCRAFT_THEME_FILE=tokens.json` | **Debug builds only:** live design-token overrides, re-read on change |
 
 ### Live design tokens

@@ -19,8 +19,9 @@ pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
     if codecs::detect(bytes) == Some(Format::Tiff) {
         return import_tiff_page(name, bytes, None);
     }
-    let img = codecs::decode(bytes)?;
+    let (img, notes) = decode_flat(bytes)?;
     let mut r = image_to_document(name, &img)?;
+    r.warnings.splice(0..0, notes);
     // OpenEXR and Radiance HDR hold linear, scene-referred values (Rec. 709 primaries unless
     // stated otherwise): tag them linear sRGB so they display and convert correctly.
     let d = &mut r.document;
@@ -28,6 +29,28 @@ pub fn import_flat(name: &str, bytes: &[u8]) -> Result<ImportResult, IoError> {
         d.icc_profile = Some(photocraft_cms::Builtin::LinearSrgb.profile().to_bytes());
     }
     Ok(r)
+}
+
+/// Decodes with `photocraft-codecs`; a HEIC or AVIF it can't open goes to the installed helper
+/// (see [`crate::heif_tool`]), with a note saying so. The first error stands when there is none,
+/// or when it fails too.
+fn decode_flat(bytes: &[u8]) -> Result<(Image, Vec<String>), IoError> {
+    let first = match codecs::decode(bytes) {
+        Ok(img) => return Ok((img, Vec::new())),
+        Err(e) => e,
+    };
+    let format = codecs::detect(bytes);
+    if let Some(format @ (Format::Heif | Format::Avif)) = format {
+        match crate::heif_tool::decode(bytes, format) {
+            Ok(Some(found)) => return Ok(found),
+            Ok(None) => {
+                let name = if format == Format::Avif { "AVIF" } else { "HEIC" };
+                return Err(IoError::Unsupported(format!("{first}; install libheif (heif-dec) to open this {name} file")));
+            }
+            Err(helper) => return Err(IoError::Unsupported(format!("{first}; {helper}"))),
+        }
+    }
+    Err(first.into())
 }
 
 /// Opens one page of a TIFF or BigTIFF file: `None` is the page Photoshop opens (the first
@@ -301,8 +324,19 @@ pub fn export_flat(doc: &Document, format: Format, opts: &ExportOptions) -> Resu
         img = cmyk_image_to_srgb(&img)?;
         warnings.push(format!("CMYK converted to sRGB for {format:?} through the document's colour profile"));
     }
+    if matches!(format, Format::Heif | Format::Avif)
+        && opts.external_tools
+        && let Some((bytes, w)) = crate::heif_tool::encode(&img, format, &opts.encode)?
+    {
+        // heif-enc or sips keep the profile; see `heif_tool`.
+        warnings.extend(w);
+        return Ok(ExportResult { bytes, warnings });
+    }
+    if matches!(format, Format::Heif | Format::Avif) && !format.caps().write {
+        return Err(IoError::Unsupported(crate::heif_tool::missing_encoder_message(format)));
+    }
     if format == Format::Jxl
-        && opts.jxl_use_cjxl
+        && opts.external_tools
         && let Some((bytes, w)) = crate::jxl_tool::encode(&img, &opts.encode)?
     {
         // libjxl's cjxl keeps the profile and writes lossy files; see `jxl_tool`.
