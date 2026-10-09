@@ -40,7 +40,12 @@ fn round_trip(d: &photocraft_doc::Document, opts: &ExportOptions) -> (photocraft
     let r = export(d, "x.jxl", opts).expect("export");
     assert_eq!(photocraft_codecs::detect(&r.bytes), Some(photocraft_codecs::Format::Jxl));
     assert!(r.warnings.iter().any(|w| w.contains("DPI")), "{:?}", r.warnings);
-    let warnings = r.warnings.into_iter().filter(|w| !w.contains("DPI")).collect();
+    // An export by cjxl says so, and whether it ran sandboxed; the built-in encoder adds no note.
+    let note = r.warnings.iter().find(|w| w.starts_with("JPEG XL written with cjxl"));
+    if let Some(note) = note {
+        assert_eq!(note.ends_with("(sandboxed)"), photocraft_io::tool_sandbox().is_some(), "{note}");
+    }
+    let warnings = r.warnings.into_iter().filter(|w| !w.contains("DPI") && !w.starts_with("JPEG XL written with")).collect();
     (import("x.jxl", &r.bytes).expect("import").document, warnings)
 }
 
@@ -107,6 +112,7 @@ fn cjxl_writes_lossy_files() {
     let opts = ExportOptions { encode: photocraft_codecs::EncodeOptions { jxl_quality: Some(60), ..Default::default() }, ..ExportOptions::default() };
     let lossy = export(&d, "x.jxl", &opts).unwrap();
     assert!(lossy.warnings.iter().any(|w| w == "lossy compression"), "{:?}", lossy.warnings);
+    assert!(lossy.warnings.first().is_some_and(|w| w.starts_with("JPEG XL written with cjxl")), "{:?}", lossy.warnings);
     assert_ne!(lossy.bytes, lossless.bytes);
     let back = import("x.jxl", &lossy.bytes).unwrap().document;
     assert_eq!(back.size, d.size);

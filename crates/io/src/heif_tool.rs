@@ -202,6 +202,7 @@ pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOpt
     if photocraft_codecs::detect(&bytes) != Some(format) {
         return Err(IoError::Unsupported(format!("{} wrote something that isn't a {name} file", tool.name())));
     }
+    warnings.insert(0, external::tool_note(name, "written", tool.name(), cmd.confined));
     Ok((bytes, warnings))
 }
 
@@ -245,7 +246,7 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Imag
     let png = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("{} didn't decode the {name} file: {e}", tool.name())))?;
     // The default decode turns the pixels upright from the PNG's EXIF Orientation (see the module docs).
     let mut img = photocraft_codecs::decode_as(Format::Png, &png)?;
-    let mut warnings = vec![format!("{name} opened with {}{}", tool.name(), if confined { " (sandboxed)" } else { "" })];
+    let mut warnings = vec![external::tool_note(name, "opened", tool.name(), confined)];
     if img.icc.is_none() && !img.layout().is_gray() {
         match nclx(bytes).map(profile_for) {
             Some(Ok(Some(profile))) => img.icc = Some(profile),

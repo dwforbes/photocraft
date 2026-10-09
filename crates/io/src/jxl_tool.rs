@@ -98,12 +98,13 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
     let timeout = external::timeout_for(img);
     // A JPEG XL file is never much larger than the raw pixels; more output is a misbehaving program.
     let out_cap = u64::try_from(img.data().len()).unwrap_or(u64::MAX).saturating_mul(2).saturating_add(1 << 20);
-    let bytes = match piped(tool, external::png(img, opts)?, opts, timeout, out_cap) {
-        Ok(bytes) => bytes,
+    let (bytes, confined) = match piped(tool, external::png(img, opts)?, opts, timeout, out_cap) {
+        Ok(done) => done,
         // A program that can't start, or that ran out of time, would do the same again.
         Err(RunError::Spawn(e) | RunError::Timeout(e)) => return Err(IoError::Unsupported(e)),
         Err(RunError::Failed(_)) => through_files(tool, external::png(img, opts)?, opts, timeout)?,
     };
+    warnings.insert(0, external::tool_note("JPEG XL", "written", "cjxl", confined));
     Ok((bytes, warnings))
 }
 
@@ -112,9 +113,10 @@ pub(crate) fn encode_with(_: &Cjxl, _: &Image, _: &EncodeOptions) -> Result<Enco
     Err(IoError::Unsupported("cjxl can't run in the browser".into()))
 }
 
-/// `cjxl - -`: the PNG on standard input, the JPEG XL file on standard output.
+/// `cjxl - -`: the PNG on standard input, the JPEG XL file on standard output; and whether `cjxl`
+/// ran sandboxed.
 #[cfg(not(target_arch = "wasm32"))]
-fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration, out_cap: u64) -> Result<Vec<u8>, RunError> {
+fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration, out_cap: u64) -> Result<(Vec<u8>, bool), RunError> {
     // The job folder stays empty: it is the sandbox's only writable place and the working folder,
     // where versions before 0.12 would have read a file named `-` instead of standard input.
     let job = TempDir::new().map_err(|e| RunError::Failed(e.to_string()))?;
@@ -124,12 +126,12 @@ fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Du
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(RunError::Failed("cjxl wrote something that isn't a JPEG XL file".into()));
     }
-    Ok(bytes)
+    Ok((bytes, cmd.confined))
 }
 
 /// `cjxl in.png out.jxl` in a private temporary folder, for when piping fails.
 #[cfg(not(target_arch = "wasm32"))]
-fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration) -> Result<Vec<u8>, IoError> {
+fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration) -> Result<(Vec<u8>, bool), IoError> {
     let dir = TempDir::new()?;
     let input = dir.write("in.png", &png)?;
     drop(png);
@@ -141,7 +143,7 @@ fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::
     if photocraft_codecs::detect(&bytes) != Some(photocraft_codecs::Format::Jxl) {
         return Err(IoError::Unsupported("cjxl wrote something that isn't a JPEG XL file".into()));
     }
-    Ok(bytes)
+    Ok((bytes, cmd.confined))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -213,10 +215,12 @@ mod tests {
         let t = std::time::Duration::from_secs(60);
         let decoded = |bytes: &[u8]| photocraft_codecs::decode(bytes).unwrap();
         for version in [found.version, (0, 7, 0)] {
-            let bytes = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
+            let (bytes, confined) = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
+            assert_eq!(confined, crate::tool_sandbox().is_some());
             assert_eq!(decoded(&bytes).data(), img.data(), "lossless through pipes ({version:?})");
         }
-        let bytes = through_files(found, external::png(&img, &opts).unwrap(), &opts, t).unwrap();
+        let (bytes, confined) = through_files(found, external::png(&img, &opts).unwrap(), &opts, t).unwrap();
+        assert_eq!(confined, crate::tool_sandbox().is_some());
         assert_eq!(decoded(&bytes).data(), img.data());
 
         // A cjxl that can't read standard input: the export still works, through files.

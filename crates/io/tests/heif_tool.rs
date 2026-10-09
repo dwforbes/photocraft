@@ -65,6 +65,10 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
                 let (bytes, warnings) = heif_tool::encode_with(&enc, &img, format, &EncodeOptions::default()).unwrap();
                 assert_eq!(photocraft_codecs::detect(&bytes), Some(format));
                 assert!(warnings.iter().any(|w| w == "lossy compression"), "{warnings:?}");
+                // The first note says which tool wrote it and whether it ran sandboxed.
+                let note = &warnings[0];
+                assert!(note.contains(&format!("written with {}", enc.name())), "{warnings:?}");
+                assert_eq!(note.ends_with("(sandboxed)"), photocraft_io::tool_sandbox().is_some(), "{note}");
                 assert_eq!(warnings.iter().any(|w| w.contains("reduced to 10-bit")), sample == SampleType::U16, "{warnings:?}");
                 for dec in decoders() {
                     let what = format!("{} → {} {format:?} {sample:?} alpha {alpha}", enc.name(), dec.name());

@@ -126,6 +126,12 @@ pub(crate) fn png(img: &Image, opts: &EncodeOptions) -> Result<Vec<u8>, IoError>
     Ok(photocraft_codecs::encode(img, photocraft_codecs::Format::Png, &png_opts)?)
 }
 
+/// The note an import or export carries about the helper that did the work: "HEIC opened with
+/// heif-dec (sandboxed)", "JPEG XL written with cjxl" (no suffix: it ran unconfined).
+pub(crate) fn tool_note(format: &str, done: &str, tool: &str, confined: bool) -> String {
+    format!("{format} {done} with {tool}{}", if confined { " (sandboxed)" } else { "" })
+}
+
 /// Whether helper tools are confined (`PHOTOCRAFT_TOOL_SANDBOX`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxPolicy {
