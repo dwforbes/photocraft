@@ -115,9 +115,10 @@ pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
 }
 
 /// Extensions the batch commands pick up from a folder.
+#[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
-    "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "jxl", "heic",
-    "heif", "hif", "avif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign", "afphoto", "afpub",
+    "pdn", "ora", "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm",
+    "jxl", "heic", "heif", "hif", "avif", "dng", "cr2", "nef", "nrw", "arw", "pef", "svg", "svgz", "af", "afdesign", "afphoto", "afpub",
 ];
 
 /// Whether saving `doc` as a TIFF writes Photoshop layer data (anything beyond a lone
@@ -131,6 +132,19 @@ pub(crate) fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+impl crate::DocState {
+    /// Complete a successful document save. File identity is not a history step; callers must
+    /// finish the write first and must not call this for a copy or export.
+    pub fn saved_to(&mut self, path: String) {
+        let name = file_name(&path);
+        if self.doc.name != name {
+            Arc::make_mut(&mut self.doc).name = name;
+        }
+        self.path = Some(path);
+        self.saved_revision = self.revision;
+    }
+}
+
 /// The lower-case extension of the file name in `path` (none for `.hidden` or `name`).
 pub fn extension(path: &str) -> Option<String> {
     file_name(path).rsplit_once('.').filter(|(base, ext)| !base.is_empty() && !ext.is_empty()).map(|(_, ext)| ext.to_ascii_lowercase())
@@ -139,7 +153,14 @@ pub fn extension(path: &str) -> Option<String> {
 /// Whether a save without a new path may write back to `path`: only layered files (PSD, PSB,
 /// .pcraft). A flat file goes through Save As instead, so it is never flattened over the original.
 pub fn saves_in_place(path: &str) -> bool {
-    extension(path).is_some_and(|ext| matches!(ext.as_str(), "psd" | "psb" | "pcraft"))
+    extension(path).is_some_and(|ext| layered_extension(&ext))
+}
+
+/// Whether the lower-case extension `ext` names a layered document format (PSD, PSB, OpenRaster,
+/// .pcraft). A save to one becomes the document's file; any other format is a copy for automation
+/// saves, desktop and headless alike (#1547, #2579).
+pub fn layered_extension(ext: &str) -> bool {
+    matches!(ext, "psd" | "psb" | "pcraft" | "ora")
 }
 
 /// Whether `path` names a document template (.psdt). A template opens as a new untitled document
@@ -185,6 +206,7 @@ pub(crate) fn sanitize(name: &str) -> String {
 }
 
 pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
+    crate::allocation::checkpoint("importing document")?;
     let r = photocraft_io::import(name, bytes).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
     // Auxiliary imports return only a document and cannot surface the preview's fidelity warning.
     // Open has its own warning-preserving path; never silently place or process a thumbnail.
@@ -225,6 +247,7 @@ impl From<Option<f64>> for SaveOpts {
 
 /// Encodes `doc` for `path`'s extension.
 pub(crate) fn encode(doc: &Document, path: &str, save: impl Into<SaveOpts>) -> Result<(Vec<u8>, Vec<String>)> {
+    crate::allocation::checkpoint("saving document")?;
     let save = save.into();
     let mut opts = photocraft_io::ExportOptions { tiff_layers: save.tiff_layers, ..Default::default() };
     if let Some(q) = save.quality {
@@ -342,6 +365,7 @@ fn save_a_copy(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Open a file's bytes, decoding them as the format `as_ext` (Open As) when given.
 pub fn open_bytes_as(s: &mut Session, name: &str, bytes: &[u8], as_ext: Option<&str>, path: Option<String>) -> Result<Value> {
+    crate::allocation::checkpoint("importing document")?;
     let decode_name = match as_ext {
         Some(ext) => format!("{}.{}", stem(name), ext.trim_start_matches('.')),
         None => name.to_string(),
@@ -379,19 +403,28 @@ fn open_as(s: &mut Session, p: &Value) -> Result<Value> {
 /// History label of an embedded place.
 pub const PLACE_EMBEDDED: &str = "Place Embedded";
 
-/// Place a file's bytes as a smart object layer, centred and (when larger than the canvas)
-/// scaled down to fit, like Photoshop's Place with "Resize Image During Place". `linked` makes it
-/// a linked smart object that refers to that path instead of embedding the bytes.
+/// Place a file's bytes as a smart object layer, centred, and (with Preferences ▸ General ▸
+/// Resize Image During Place, on by default) scaled down to fit when larger than the canvas.
+/// `linked` makes it a linked smart object that refers to that path instead of embedding the bytes.
 pub fn place_bytes(s: &mut Session, name: &str, bytes: Vec<u8>, linked: Option<String>, p: &Value) -> Result<Value> {
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let (cw, ch) = (d.doc.size.width as f64, d.doc.size.height as f64);
     let fmt = d.doc.pixel_format();
     let vector = photocraft_io::svg::is_svg(&bytes);
-    let src = import(name, &bytes)?;
+    let max_svg_group_depth = s.prefs().file_handling.rasterize_svg_groups_deeper_than as usize;
+    let imported = photocraft_io::import_with_svg_group_depth(name, &bytes, max_svg_group_depth).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
+    if imported.preview_only {
+        return Err(EngineError::Other(format!(
+            "{name}: only this Affinity file's embedded preview could be read; open it with File › Open to see the warning, or export PSD or PNG from Affinity before using it here"
+        )));
+    }
+    let src = imported.document;
     let (w, h) = (src.size.width as f64, src.size.height as f64);
+    // The implicit `fit` is Preferences ▸ General ▸ Resize Image During Place (on by default).
+    let fit = p.get("fit").and_then(Value::as_bool).unwrap_or(s.prefs().general.resize_image_during_place);
     let scale = match f64_param(p, "scale") {
         Some(k) => (k / 100.0).max(1e-4),
-        None if p.get("fit").and_then(Value::as_bool) != Some(false) && (w > cw || h > ch) => (cw / w).min(ch / h),
+        None if fit && (w > cw || h > ch) => (cw / w).min(ch / h),
         None => 1.0,
     };
     let center = match p.get("center").and_then(Value::as_array) {
@@ -529,23 +562,20 @@ pub fn read_file_info(xmp: Option<&str>) -> Value {
     Value::Object(m)
 }
 
-/// Rewrites the File Info fields of an XMP packet (creating one when there is none), keeping
-/// every other property. Edited properties move into their own `rdf:Description` (several
-/// descriptions per packet are valid XMP).
+/// Rewrites only changed File Info fields of an XMP packet (creating one when there is none),
+/// keeping the other properties verbatim. Edited properties move into their own
+/// `rdf:Description` (several descriptions per packet are valid XMP).
 pub fn write_file_info(xmp: Option<&str>, info: &Value) -> String {
-    let mut cur = read_file_info(xmp);
-    if let (Some(c), Some(n)) = (cur.as_object_mut(), info.as_object()) {
-        for (k, v) in n {
-            if c.contains_key(k) {
-                c.insert(k.clone(), v.clone());
-            }
-        }
-    }
+    let cur = read_file_info(xmp);
+    // The dialog submits all fields, including unchanged language alternatives.
+    let changed = |key: &str| info.get(key).is_some_and(|v| cur.get(key) != Some(v));
     let mut x = xmp.filter(|s| s.contains("</rdf:RDF>")).map(str::to_string).unwrap_or_else(|| {
         "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>".to_string()
     });
-    let props: Vec<&str> = INFO_FIELDS.iter().map(|f| f.1).chain(["xmpRights:Marked", "xmpRights:WebStatement"]).collect();
-    for prop in &props {
+    for (key, prop, _) in INFO_FIELDS.into_iter().chain([("copyrightStatus", "xmpRights:Marked", ""), ("copyrightUrl", "xmpRights:WebStatement", "")]) {
+        if !changed(key) {
+            continue;
+        }
         while let Some((a, b, _)) = find_element(&x, prop) {
             x.replace_range(a..b, "");
         }
@@ -553,7 +583,7 @@ pub fn write_file_info(xmp: Option<&str>, info: &Value) -> String {
             x.replace_range(a..b, "");
         }
     }
-    let get = |k: &str| cur.get(k).cloned().unwrap_or(Value::Null);
+    let get = |k: &str| info.get(k).filter(|_| changed(k)).cloned().unwrap_or(Value::Null);
     let mut body = String::new();
     for (key, prop, kind) in INFO_FIELDS {
         let vals: Vec<String> = match get(key) {
@@ -746,19 +776,36 @@ impl OutputClaims {
     }
 }
 
-fn batch(_s: &mut Session, p: &Value) -> Result<Value> {
+fn batch(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.batch";
-    let steps =
+    let mut steps =
         parse_steps(p.get("steps").or_else(|| p.get("action")).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "missing \"steps\"".into() })?)?;
+    // Each result goes to the destination folder, which overrides the action's recorded Save /
+    // Save As steps (Photoshop's "Override Action 'Save As' Commands"). Recorded view steps
+    // (zoom, fit) don't change the output, so they are skipped (#2752).
+    steps.retain(|(id, _)| !crate::actions_cmds::shell_save_command(id) && !crate::actions_cmds::shell_view_command(id));
     if let Some((id, _)) = steps.iter().find(|(id, _)| crate::commands::find(id).is_none()) {
         return Err(EngineError::BadParams { cmd: cmd.into(), msg: format!("unknown command `{id}` in the action") });
     }
     let inputs = batch_inputs(p, cmd)?;
     let output = str_param(p, "output", cmd)?.to_string();
     let format = p.get("format").and_then(Value::as_str).unwrap_or("same").to_string();
+    // Steps that call another action play it from the caller's actions; the playback stack comes
+    // along so an action that batches itself is caught as a recursive call.
+    let actions = crate::actions_cmds::ActionState {
+        list: s.actions.list.clone(),
+        playing: s.actions.playing,
+        playback_stack: s.actions.playback_stack.clone(),
+        ..Default::default()
+    };
     let r = process_files(&inputs, &output, &format, SaveOpts::from_params(p), "", &|scratch| {
+        scratch.actions = actions.clone();
         for (id, params) in &steps {
-            scratch.execute(id, params.clone())?;
+            let r = scratch.execute(id, params.clone())?;
+            // A failed step inside a called action makes this file an error, not a saved result.
+            if let Some(error) = crate::actions_cmds::nested_failure(id, &r) {
+                return Err(EngineError::Other(error));
+            }
         }
         Ok(())
     });
@@ -816,10 +863,10 @@ fn load_files_into_stack(s: &mut Session, p: &Value) -> Result<Value> {
     let n = stack.layers.len();
     if p.get("createSmartObject").and_then(Value::as_bool).unwrap_or(false) {
         // "Create Smart Object after Loading Layers": the layers go inside one smart object, ready
-        // for Layer › Smart Objects › Stack Mode.
-        let children = std::mem::take(&mut stack.layers);
-        let group = Layer::new(stem(&paths[0]), LayerContent::Group(photocraft_doc::Group { children, expanded: true, artboard: None }));
-        let smart = crate::smart_cmds::layer_to_smart(&stack, &group)?;
+        // for Layer › Smart Objects › Stack Mode. Like Photoshop, they sit at the top level of the
+        // contents, with no wrapper group.
+        let layers = std::mem::take(&mut stack.layers);
+        let smart = crate::smart_cmds::layers_to_smart(&stack, &stem(&paths[0]), layers)?;
         stack.layers = vec![smart];
     }
     let i = s.add_document(stack, None);
@@ -938,10 +985,53 @@ fn layers_to_files(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"files": files}))
 }
 
-/// The document's visible top-level adjustment layers applied to an identity lattice, as a
-/// `.cube` 3D LUT (red fastest, values 0–1).
-pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
-    let n = size.clamp(2, 256);
+/// Adjustment layers that can be represented as an RGB-only LUT, in document stack order.
+/// A LUT has no spatial coordinates, so masks and clipping geometry are deliberately stripped
+/// at bake time. Group adjustments need their enclosing group's compositing semantics and are
+/// not silently flattened as independent layers.
+fn lut_layers<'a>(doc: &'a Document, ids: Option<&[LayerId]>) -> Result<Vec<&'a Layer>> {
+    const CMD: &str = "file.export.colorLookupTables";
+    let mut selected = Vec::new();
+    if let Some(ids) = ids {
+        if ids.is_empty() {
+            return Err(EngineError::BadParams { cmd: CMD.into(), msg: "select at least one adjustment layer".into() });
+        }
+        for id in ids {
+            if selected.contains(id) {
+                return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("duplicate layer id {}", id.0) });
+            }
+            let Some(layer) = doc.layer(*id) else { return Err(EngineError::NoLayer(*id)) };
+            if !matches!(layer.content, LayerContent::Adjustment(_)) {
+                return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("layer {} is not an adjustment layer", id.0) });
+            }
+            if !layer.visible {
+                return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("layer {} is hidden", id.0) });
+            }
+            if !doc.layers.iter().any(|root| root.id == *id) {
+                return Err(EngineError::BadParams {
+                    cmd: CMD.into(),
+                    msg: format!("layer {} is nested in a group; export top-level adjustment layers", id.0),
+                });
+            }
+            selected.push(*id);
+        }
+    }
+    let mut layers = Vec::new();
+    for l in &doc.layers {
+        if l.visible && matches!(l.content, LayerContent::Adjustment(_)) && (ids.is_none() || selected.contains(&l.id)) {
+            layers.push(l);
+        }
+    }
+    if layers.is_empty() {
+        return Err(EngineError::BadParams { cmd: CMD.into(), msg: "no visible adjustment layers to export".into() });
+    }
+    Ok(layers)
+}
+
+/// Bake the chosen adjustment stack against an identity RGB lattice.
+/// Source order always follows the document stack, even if an explicit list is reversed.
+fn bake_cube_layers(size: usize, title: &str, layers: &[&Layer]) -> String {
+    let n = size;
     let (w, h) = ((n * n) as u32, n as u32);
     let mut lattice = Document::new("lut", photocraft_doc::Size::new(w, h), ColorMode::Rgb, photocraft_color::SampleType::F32);
     let fmt = lattice.pixel_format();
@@ -959,8 +1049,8 @@ pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
     let mut surf = Surface::new(fmt);
     surf.write_region(Rect::new(0, 0, w as i32, h as i32), &data);
     lattice.layers.push(Layer::new("Lattice", LayerContent::Raster(surf)));
-    for l in doc.layers.iter().filter(|l| l.visible && matches!(l.content, LayerContent::Adjustment(_))) {
-        let mut a = l.clone();
+    for l in layers {
+        let mut a = (*l).clone();
         // Masks and clipping are spatial; a LUT is the adjustment stack's colour mapping.
         a.mask = None;
         a.vector_mask = None;
@@ -982,17 +1072,58 @@ pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
     s
 }
 
+/// Backwards-compatible helper for exporting all visible top-level adjustments.
+pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
+    let layers: Vec<&Layer> = doc.layers.iter().filter(|l| l.visible && matches!(l.content, LayerContent::Adjustment(_))).collect();
+    bake_cube_layers(size.clamp(2, photocraft_cms::lutfile::MAX_SIZE), title, &layers)
+}
+
+/// Export either the whole visible stack (backward-compatible default), the Layers panel's
+/// current selection, or an explicit list supplied by scripts/CLI/automation.
 fn color_lookup_tables(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "file.export.colorLookupTables";
     let d = s.active().ok_or(EngineError::NoDocument)?;
-    let size = p.get("size").and_then(Value::as_u64).unwrap_or(33) as usize;
+    let size = match p.get("size") {
+        None | Some(Value::Null) => 33,
+        Some(v) => v.as_u64().ok_or_else(|| EngineError::BadParams { cmd: CMD.into(), msg: "size must be an integer".into() })?,
+    };
+    if !(2..=photocraft_cms::lutfile::MAX_SIZE as u64).contains(&size) {
+        return Err(EngineError::BadParams { cmd: CMD.into(), msg: format!("size must be 2..={}", photocraft_cms::lutfile::MAX_SIZE) });
+    }
+    let scope = match p.get("scope") {
+        None | Some(Value::Null) => "all",
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => return Err(EngineError::BadParams { cmd: CMD.into(), msg: "scope must be all or selected".into() }),
+    };
+    if !matches!(scope, "all" | "selected") {
+        return Err(EngineError::BadParams { cmd: CMD.into(), msg: "scope must be all or selected".into() });
+    }
+    if p.get("layers").is_some() && scope == "selected" {
+        return Err(EngineError::BadParams { cmd: CMD.into(), msg: "use either layers or scope=selected, not both".into() });
+    }
+    let explicit: Option<Vec<LayerId>> = if let Some(v) = p.get("layers") {
+        let Some(a) = v.as_array() else { return Err(EngineError::BadParams { cmd: CMD.into(), msg: "layers must be an array of layer IDs".into() }) };
+        let mut out = Vec::with_capacity(a.len());
+        for id in a {
+            let Some(id) = id.as_u64() else { return Err(EngineError::BadParams { cmd: CMD.into(), msg: "layer IDs must be unsigned integers".into() }) };
+            out.push(LayerId(id));
+        }
+        Some(out)
+    } else if scope == "selected" {
+        Some(d.selected_layers())
+    } else {
+        None
+    };
+    let layers = lut_layers(&d.doc, explicit.as_deref())?;
+    let count = layers.len();
     let title = p.get("title").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
-    let cube = bake_cube(&d.doc, size, &title);
+    let cube = bake_cube_layers(size as usize, &title, &layers);
     match p.get("path").and_then(Value::as_str) {
         Some(path) => {
             write_file(path, cube.as_bytes())?;
-            Ok(json!({"path": path, "size": size.clamp(2, 256)}))
+            Ok(json!({"path": path, "size": size, "layerCount": count}))
         }
-        None => Ok(json!({"cube": cube, "size": size.clamp(2, 256)})),
+        None => Ok(json!({"cube": cube, "size": size, "layerCount": count})),
     }
 }
 
@@ -1176,13 +1307,19 @@ pub fn specs() -> Vec<CommandSpec> {
             "Place Embedded…",
             &["File"],
             None,
-            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool=true,"center":[x,y]?}"##,
+            r##"{"path":str,"scale":%? (default: fit when larger than the canvas),"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?}"##,
             native_doc,
             |s, p| place(s, p, false)
         ),
-        spec!("file.placeLinked", "Place Linked…", &["File"], None, r##"{"path":str,"scale":%?,"fit":bool=true,"center":[x,y]?}"##, native_doc, |s, p| place(
-            s, p, true
-        )),
+        spec!(
+            "file.placeLinked",
+            "Place Linked…",
+            &["File"],
+            None,
+            r##"{"path":str,"scale":%?,"fit":bool? (default: Preferences > General > Resize Image During Place),"center":[x,y]?}"##,
+            native_doc,
+            |s, p| place(s, p, true)
+        ),
         spec!(
             "file.fileInfo",
             "File Info…",
@@ -1261,7 +1398,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Color Lookup Tables…",
             &["File", "Export"],
             None,
-            r##"{"path":str? (.cube; omit to return the text),"size":2..256=33,"title":str?}"##,
+            r##"{"path":str? (.cube; omit to return the text),"size":2..129=33,"title":str?,"scope":"all|selected"="all","layers":[id,…]?} (selected layer IDs use original document stacking; masks are spatial and omitted)"##,
             has_adjustments,
             color_lookup_tables
         ),

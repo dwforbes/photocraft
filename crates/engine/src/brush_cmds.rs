@@ -182,6 +182,8 @@ pub fn resolve_brush(s: &Session, p: &Value, cmd: &str) -> Result<BrushSettings>
     if let Some(patch) = p.get("brush").filter(|v| v.is_object()) {
         b = merge_brush(&b, patch, cmd)?;
     }
+    // A library preset's tips stay on disk until a stroke uses them (#1843).
+    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     if let Some(v) = num(p, "size") {
         b.size = v.max(0.5);
     }
@@ -243,45 +245,55 @@ fn erase_locked(brush: &mut BrushSettings, lock: bool, bg: [f32; 4]) {
     }
 }
 
+/// The document's own CMYK profile (absent, built-in or not a CMYK document: `None`, the
+/// default conversions), which the stroke's colour conversions must honour — the compositors
+/// and composite exports enter the same scope.
+fn doc_cmyk_space(s: &Session) -> Option<std::sync::Arc<photocraft_color::convert::CmykSpace>> {
+    photocraft_color::convert::CmykSpace::for_profile(s.active().and_then(|d| d.doc.icc_profile.as_ref()))
+}
+
 /// Stroke with a resolved brush onto the target layer (pixels or mask).
 fn stroke_with(s: &mut Session, p: &Value, label: &str, brush: BrushSettings, pts: Vec<StrokePoint>, auto_erase: bool) -> Result<Value> {
     let bg = s.tools.background;
     let fg = brush.color;
     let symmetry = s.active().and_then(|st| st.symmetry.clone());
     let (id, brush, zoom) = stroke_target(s, p, brush)?;
-    let dmg = s.edit(label, |doc, _| {
-        let sel = doc.selection.clone();
-        let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
-        let mut brush = brush;
-        erase_locked(&mut brush, lock, bg);
-        if auto_erase {
-            apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
-        }
-        let damage = if let Some(axis) = &symmetry {
-            let reflected = axis.reflected_passes(&pts);
-            let copies: Vec<_> = reflected
-                .iter()
-                .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
-                .map(|p| {
-                    let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-                    renderer.push(p);
-                    renderer.finish();
-                    renderer
-                })
-                .collect();
-            if copies.is_empty() {
-                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
-            } else {
-                let pre = surf.clone();
-                let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
-                original.push(&pts);
-                original.finish();
-                original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
+    let cmyk = doc_cmyk_space(s);
+    let dmg = photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+        s.edit(label, |doc, _| {
+            let sel = doc.selection.clone();
+            let (surf, lock) = crate::channel_cmds::target_surface(doc, id, p)?;
+            let mut brush = brush;
+            erase_locked(&mut brush, lock, bg);
+            if auto_erase {
+                apply_auto_erase(&mut brush, surf, pts.first(), fg, bg);
             }
-        } else {
-            render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
-        };
-        Ok(damage)
+            let damage = if let Some(axis) = &symmetry {
+                let reflected = axis.reflected_passes(&pts);
+                let copies: Vec<_> = reflected
+                    .iter()
+                    .filter(|p| crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(&pts, p))
+                    .map(|p| {
+                        let mut renderer = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                        renderer.push(p);
+                        renderer.finish();
+                        renderer
+                    })
+                    .collect();
+                if copies.is_empty() {
+                    render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+                } else {
+                    let pre = surf.clone();
+                    let mut original = StrokeRenderer::new(&brush, Some(surf.format()), zoom);
+                    original.push(&pts);
+                    original.finish();
+                    original.composite_union_many(&copies, &pre, surf, sel.as_ref(), lock)
+                }
+            } else {
+                render_stroke(surf, &brush, &pts, sel.as_ref(), lock, zoom)
+            };
+            Ok(damage)
+        })
     })?;
     Ok(damage_json(s, dmg))
 }
@@ -300,6 +312,9 @@ fn apply_auto_erase(brush: &mut BrushSettings, surf: &Surface, start: Option<&St
 /// dabs on the pixel grid), hard and at full flow, with the options-bar mode.
 fn pencil_brush(s: &Session, p: &Value) -> Result<BrushSettings> {
     let mut brush = with_blend_mode(resolve_brush(s, p, "paint.pencil")?, p);
+    if flag(p, "block", false) {
+        return block_brush(brush, p);
+    }
     brush.aliased = true;
     if num(p, "hardness").is_none() {
         brush.hardness = 1.0;
@@ -308,6 +323,42 @@ fn pencil_brush(s: &Session, p: &Value) -> Result<BrushSettings> {
         brush.flow = 1.0;
     }
     Ok(brush)
+}
+
+/// Edge of the Eraser's Block in screen pixels (Photoshop): constant on screen, so it covers
+/// `BLOCK_SCREEN_PX / zoom` document pixels.
+pub const BLOCK_SCREEN_PX: f64 = 16.0;
+
+/// The Eraser's Block edge in document pixels at view `zoom`: `16 / zoom`, rounded to whole
+/// pixels (a zoom that is not a positive number counts as 100 %).
+pub fn block_size(zoom: f64) -> f32 {
+    let zoom = if zoom.is_finite() && zoom > 0.0 { zoom } else { 1.0 };
+    (BLOCK_SCREEN_PX / zoom).round().clamp(1.0, f64::from(photocraft_paint::brush::MAX_BRUSH_SIZE)) as f32
+}
+
+/// The Eraser's Block mode (`"block": true`): a hard, aliased square of
+/// [`BLOCK_SCREEN_PX`] screen pixels at the stroke's `"zoom"`, i.e. `16 / zoom` document
+/// pixels rounded to whole pixels. Size, opacity, flow, hardness and the brush's dynamics don't
+/// apply (Photoshop); colour, erase, smoothing and the seed are the resolved brush's.
+fn block_brush(b: BrushSettings, p: &Value) -> Result<BrushSettings> {
+    let zoom = match p.get("zoom") {
+        None => 1.0,
+        Some(v) => v.as_f64().filter(|z| z.is_finite() && *z > 0.0).ok_or_else(|| bad("paint.pencil", "`zoom` must be a positive number"))?,
+    };
+    Ok(BrushSettings {
+        size: block_size(zoom),
+        aliased: true,
+        square: true,
+        pressure_size: false,
+        pressure_opacity: false,
+        spacing: 0.25,
+        color: b.color,
+        background: b.background,
+        erase: b.erase,
+        smoothing: b.smoothing,
+        seed: b.seed,
+        ..BrushSettings::default()
+    })
 }
 
 /// Applies the options-bar blend `mode` to a brush. `"mode"` accepts any blend-mode name
@@ -351,6 +402,9 @@ pub struct LiveStroke {
     params: Value,
     /// Where the doc shows the stroke's end as finishing it would draw it (see `push`).
     tail: Rect,
+    /// The document's CMYK profile the commit enters (`stroke_with`), so the preview shows the
+    /// pixels a `paint.stroke` with `seed` will write.
+    cmyk: Option<std::sync::Arc<photocraft_color::convert::CmykSpace>>,
 }
 
 impl LiveStroke {
@@ -399,6 +453,7 @@ impl LiveStroke {
             layer,
             params: p.clone(),
             tail: Rect::EMPTY,
+            cmyk: doc_cmyk_space(s),
         };
         live.push(&pts)?;
         Ok(live)
@@ -410,6 +465,12 @@ impl LiveStroke {
         self.mirrors.iter().zip(&self.mirror_distinct).filter(|(_, distinct)| **distinct).fold(bounds, |b, (r, _)| b.union(&r.bounds()))
     }
 
+    /// Does the stroke change with time while the pointer is held still (airbrush Build-up, or
+    /// smoothing still catching up)? See `photocraft_paint::dynamics::DabGenerator::wants_time`.
+    pub fn wants_time(&self) -> bool {
+        self.renderer.wants_time()
+    }
+
     /// Render more points; returns the rectangle that changed. The doc shows the stroke as
     /// committing it now would: with smoothing, the brush lags behind the pointer and catches up
     /// when the stroke ends, so that catch-up tail is drawn too (and redrawn on every step), and
@@ -417,57 +478,60 @@ impl LiveStroke {
     /// Invalid coordinates reject the whole batch without changing the preview.
     pub fn push(&mut self, pts: &[StrokePoint]) -> Result<Rect> {
         check_coords(pts, &self.cmd)?;
-        self.renderer.push(pts);
-        if let Some(symmetry) = &self.symmetry {
-            for ((mirror, distinct), reflected) in self.mirrors.iter_mut().zip(&mut self.mirror_distinct).zip(symmetry.reflected_passes(pts)) {
-                *distinct |= crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(pts, &reflected);
-                mirror.push(&reflected);
+        let cmyk = self.cmyk.clone();
+        photocraft_color::convert::with_cmyk_space(cmyk.as_ref(), || {
+            self.renderer.push(pts);
+            if let Some(symmetry) = &self.symmetry {
+                for ((mirror, distinct), reflected) in self.mirrors.iter_mut().zip(&mut self.mirror_distinct).zip(symmetry.reflected_passes(pts)) {
+                    *distinct |= crate::symmetry_cmds::SymmetryAxis::has_distinct_mirror(pts, &reflected);
+                    mirror.push(&reflected);
+                }
             }
-        }
-        let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
-        if self.mirror_distinct.iter().any(|d| *d) {
-            // Merge every finished pass once, both here and on commit, including shared axes.
-            let old = self.tail;
-            let mut original_preview = self.renderer.clone();
-            original_preview.finish();
-            let copies: Vec<_> = self
-                .mirrors
-                .iter()
-                .zip(&self.mirror_distinct)
-                .filter(|(_, d)| **d)
-                .map(|(r, _)| {
-                    let mut r = r.clone();
-                    r.finish();
-                    r
-                })
-                .collect();
-            let bounds = copies.iter().fold(original_preview.bounds().union(&old), |b, r| b.union(&r.bounds()));
-            if self.symmetry_regions.is_empty() && !old.is_empty() {
+            let (surf, _) = crate::channel_cmds::target_surface(std::sync::Arc::make_mut(&mut self.doc), self.layer, &self.params)?;
+            if self.mirror_distinct.iter().any(|d| *d) {
+                // Merge every finished pass once, both here and on commit, including shared axes.
+                let old = self.tail;
+                let mut original_preview = self.renderer.clone();
+                original_preview.finish();
+                let copies: Vec<_> = self
+                    .mirrors
+                    .iter()
+                    .zip(&self.mirror_distinct)
+                    .filter(|(_, d)| **d)
+                    .map(|(r, _)| {
+                        let mut r = r.clone();
+                        r.finish();
+                        r
+                    })
+                    .collect();
+                let bounds = copies.iter().fold(original_preview.bounds().union(&old), |b, r| b.union(&r.bounds()));
+                if self.symmetry_regions.is_empty() && !old.is_empty() {
+                    surf.write_region(old, &self.pre.read_region(old));
+                }
+                for region in &self.symmetry_regions {
+                    surf.write_region(*region, &self.pre.read_region(*region));
+                }
+                self.symmetry_regions =
+                    std::iter::once(original_preview.bounds()).chain(copies.iter().map(StrokeRenderer::bounds)).filter(|r| !r.is_empty()).collect();
+                let damage = original_preview.composite_union_many(&copies, &self.pre, surf, self.sel.as_ref(), self.lock);
+                self.tail = bounds;
+                return Ok(damage.union(&bounds));
+            }
+            let mut dmg = Rect::EMPTY;
+            let old = std::mem::replace(&mut self.tail, Rect::EMPTY);
+            if !old.is_empty() {
+                // Back to the stroke without the previous tail.
                 surf.write_region(old, &self.pre.read_region(old));
+                self.renderer.mark_dirty(old);
+                dmg = old;
             }
-            for region in &self.symmetry_regions {
-                surf.write_region(*region, &self.pre.read_region(*region));
+            dmg = dmg.union(&self.renderer.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false));
+            if let Some(mut tail) = self.renderer.tail_preview() {
+                self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
+                dmg = dmg.union(&self.tail);
             }
-            self.symmetry_regions =
-                std::iter::once(original_preview.bounds()).chain(copies.iter().map(StrokeRenderer::bounds)).filter(|r| !r.is_empty()).collect();
-            let damage = original_preview.composite_union_many(&copies, &self.pre, surf, self.sel.as_ref(), self.lock);
-            self.tail = bounds;
-            return Ok(damage.union(&bounds));
-        }
-        let mut dmg = Rect::EMPTY;
-        let old = std::mem::replace(&mut self.tail, Rect::EMPTY);
-        if !old.is_empty() {
-            // Back to the stroke without the previous tail.
-            surf.write_region(old, &self.pre.read_region(old));
-            self.renderer.mark_dirty(old);
-            dmg = old;
-        }
-        dmg = dmg.union(&self.renderer.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false));
-        if let Some(mut tail) = self.renderer.tail_preview() {
-            self.tail = tail.composite(&self.pre, surf, self.sel.as_ref(), self.lock, false);
-            dmg = dmg.union(&self.tail);
-        }
-        Ok(dmg)
+            Ok(dmg)
+        })
     }
 }
 
@@ -569,10 +633,14 @@ fn presets_list(s: &mut Session, p: &Value) -> Result<Value> {
                 "builtin": pr.builtin,
                 "size": pr.brush.size,
                 "hardness": pr.brush.hardness,
-                "tip": match &pr.brush.tip { TipShape::Round => "round", TipShape::Sampled(_) => "sampled" },
+                "tip": match &pr.brush.tip { TipShape::Round => "round", TipShape::Sampled(_) | TipShape::Stored(_) => "sampled" },
             });
             if full {
-                v["brush"] = brush_json(&pr.brush);
+                // Full settings embed the bitmaps: load stored tips (a tip that can't be loaded
+                // stays a reference to the store).
+                let mut b = pr.brush.clone();
+                let _ = s.load_brush_tips(&mut b);
+                v["brush"] = brush_json(&b);
             }
             v
         }).collect::<Vec<_>>()
@@ -583,6 +651,7 @@ fn name_param(p: &Value, cmd: &str) -> Result<String> {
     p.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).ok_or_else(|| bad(cmd, "missing `name`"))
 }
 
+/// Replace the preset of that name, or append it at the end of the list.
 fn upsert(s: &mut Session, preset: BrushPreset) {
     match s.tools.presets.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&preset.name)) {
         Some(x) => *x = preset,
@@ -598,7 +667,9 @@ fn presets_save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(patch) => merge_brush(&s.tools.brush, patch, cmd)?,
         None => s.tools.brush.clone(),
     };
-    upsert(s, BrushPreset { name: name.clone(), brush, builtin: false, group: String::new() });
+    upsert(s, BrushPreset { name: name.clone(), brush, builtin: false, group: String::new(), folder: Vec::new() });
+    // The saved brush is the current brush now (Photoshop selects the brush it just saved).
+    s.tools.current_preset = Some(name.clone());
     Ok(json!({ "name": name, "count": s.tools.presets.len() }))
 }
 
@@ -610,8 +681,46 @@ fn presets_delete(s: &mut Session, p: &Value) -> Result<Value> {
     if s.tools.presets.len() == before {
         return Err(bad(cmd, format!("no brush preset named `{name}`")));
     }
+    if s.tools.current_preset.as_ref().is_some_and(|c| c.eq_ignore_ascii_case(&name)) {
+        s.tools.current_preset = None;
+    }
     s.brush_presets_changed();
     Ok(json!({ "count": s.tools.presets.len() }))
+}
+
+/// Overwrite an existing preset with the current brush (or the current brush plus a `brush`
+/// patch), in place: no new preset, the position, name and group stay. The preset defaults to the
+/// one the current brush was picked from. A built-in that is updated becomes the user's preset
+/// (built-ins regenerate with their factory settings).
+fn presets_update(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "brush.presets.update";
+    let name = match p.get("name").filter(|v| !v.is_null()) {
+        Some(_) => name_param(p, cmd)?,
+        None => s.tools.current_preset.clone().ok_or_else(|| bad(cmd, "the current brush was not picked from a preset"))?,
+    };
+    let brush = match p.get("brush").filter(|v| v.is_object()) {
+        Some(patch) => merge_brush(&s.tools.brush, patch, cmd)?,
+        None => s.tools.brush.clone(),
+    };
+    let pr = s.tools.presets.iter_mut().find(|x| x.name.eq_ignore_ascii_case(&name)).ok_or_else(|| bad(cmd, format!("no brush preset named `{name}`")))?;
+    pr.brush = brush;
+    pr.builtin = false;
+    let (name, group) = (pr.name.clone(), pr.group.clone());
+    s.brush_presets_changed();
+    Ok(json!({ "name": name, "group": group }))
+}
+
+/// Mark a preset as the one the current brush was picked from. The tip grids' click copies only
+/// the tip fields (the rest of the brush stays), so the engine cannot infer the preset from the
+/// brush: the UI names it. Selection is by identity, so look-alike duplicates stay distinct.
+fn presets_set_current(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "brush.presets.setCurrent";
+    let name = name_param(p, cmd)?;
+    if !s.tools.presets.iter().any(|x| x.name.eq_ignore_ascii_case(&name)) {
+        return Err(bad(cmd, format!("no brush preset named `{name}`")));
+    }
+    s.tools.current_preset = Some(name.clone());
+    Ok(json!({ "name": name }))
 }
 
 fn has_selection_and_pixels(s: &Session) -> std::result::Result<(), String> {
@@ -674,18 +783,22 @@ fn define_from_selection(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let tip = GrayTile::from_f32(tw, th, &data);
     let brush = BrushSettings { tip: TipShape::Sampled(tip), size: tw.max(th) as f32, spacing: 0.25, pressure_size: false, ..BrushSettings::default() };
-    upsert(s, BrushPreset { name: name.clone(), brush: brush.clone(), builtin: false, group: String::new() });
+    upsert(s, BrushPreset { name: name.clone(), brush: brush.clone(), builtin: false, group: String::new(), folder: Vec::new() });
     s.tools.brush = brush;
+    s.tools.current_preset = Some(name.clone());
     Ok(json!({ "name": name, "width": tw, "height": th }))
 }
 
 pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "tools.setBrush";
     let mut b = s.tools.brush.clone();
+    let mut picked = None;
     if let Some(name) = p.get("preset").and_then(Value::as_str) {
         b = find_preset(s, name, cmd)?.brush.clone().picked_over(&s.tools.brush);
+        picked = Some(name.to_string());
     }
-    if flag(p, "reset", false) {
+    let reset = flag(p, "reset", false);
+    if reset {
         b = BrushSettings::default();
     }
     let mut patch = p.clone();
@@ -703,6 +816,16 @@ pub(crate) fn set_brush(s: &mut Session, p: &Value) -> Result<Value> {
     }
     b = merge_brush(&b, &patch, cmd)?;
     validate_brush(&b, cmd)?;
+    // The picked preset stays "the current brush" across later edits, so `brush.presets.update`
+    // knows what to overwrite. Only once the brush is accepted: a failed call leaves no state
+    // behind (a `reset` wins over a `preset`, as it replaces the whole brush).
+    if reset {
+        s.tools.current_preset = None;
+    } else if let Some(name) = picked {
+        s.tools.current_preset = Some(name);
+    }
+    // The tool's brush always paints with full tips: load a library preset's from the store.
+    s.load_brush_tips(&mut b).map_err(|e| bad(cmd, e))?;
     let before = std::mem::replace(&mut s.tools.brush, b);
     // A coalesced gesture (one slider drag) journals as one call: remember the brush it started from.
     let key = p.get("coalesce").and_then(Value::as_str).filter(|_| p.get("preset").is_none() && p.get("reset").is_none());
@@ -798,7 +921,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "paint.pencil",
             "Pencil",
-            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…"="normal","erase":bool?,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target}"##,
+            r##"{"points":[[x,y,pressure?,tiltX?,tiltY?,rotation?,timeMs?,wheel?],…],"brush":{…}?,"preset":name?,"size":0.5..5000 px?,"opacity":0..1?,"color":"#rrggbb"?=foreground,"mode":"normal|multiply|screen|…"="normal","erase":bool?,"block":bool=false (a hard 16×16 screen-px square, 16/zoom doc px; size, opacity, flow, hardness and dynamics ignored: the Eraser's Block mode),"zoom":view zoom=1,"autoErase":bool=false,"seed":u64?,"target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target}"##,
             has_paintable,
             pencil,
             true
@@ -821,7 +944,16 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("brush.presets.list", "List Brush Presets", r##"{"full":bool=false}"##, always, presets_list, false),
         spec!("brush.presets.save", "Save Brush Preset", r##"{"name":string,"brush":{…BrushSettings}?=current brush}"##, always, presets_save, true),
+        spec!(
+            "brush.presets.update",
+            "Update Brush Preset",
+            r##"{"name":string?=the preset the current brush was picked from,"brush":{…BrushSettings}?=current brush}"##,
+            always,
+            presets_update,
+            true
+        ),
         spec!("brush.presets.delete", "Delete Brush Preset", r##"{"name":string}"##, always, presets_delete, true),
+        spec!("brush.presets.setCurrent", "Set Current Brush Preset", r##"{"name":string}"##, always, presets_set_current, true),
         spec!("brush.defineFromSelection", "Define Brush Preset…", r##"{"name":string}"##, has_selection_and_pixels, define_from_selection, true),
         spec!("brush.get", "Get Brush", "{}", always, |s, _| Ok(brush_json(&s.tools.brush)), false),
         spec!("tools.setBrush", "Set Brush", r##"{"preset":name?,"reset":bool?,…BrushSettings fields (camelCase, deep-merged)}"##, always, set_brush, true),

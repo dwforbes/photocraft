@@ -14,6 +14,12 @@ use crate::{ExportSettings, PhotocraftApp};
 const FORMATS: [(&str, &str); 8] =
     [("png", "PNG"), ("jpg", "JPG"), ("webp", "WebP"), ("jxl", "JPEG XL"), ("heic", "HEIC"), ("avif", "AVIF"), ("tif", "TIFF"), ("tga", "TGA")];
 
+/// The formats this build can write: the browser has no JPEG XL encoder and runs no helper tools
+/// (HEIC and AVIF are written by libheif or macOS), so it offers the others.
+fn formats() -> Vec<(&'static str, &'static str)> {
+    FORMATS.iter().copied().filter(|(k, _)| !(cfg!(target_arch = "wasm32") && matches!(*k, "jxl" | "heic" | "avif"))).collect()
+}
+
 /// Formats with a Lossless switch next to Quality.
 fn has_lossless(fmt: &str) -> bool {
     matches!(fmt, "webp" | "jxl" | "heic" | "avif")
@@ -168,7 +174,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(tl!("Format")).color(t.text_dim));
                 let mut fmt = s_fmt(f);
-                let opts: Vec<(String, &str)> = FORMATS.iter().map(|(k, l)| (k.to_string(), *l)).collect();
+                let opts: Vec<(String, &str)> = formats().into_iter().map(|(k, l)| (k.to_string(), l)).collect();
                 if crate::widgets::dropdown(ui, "export-format", &mut fmt, &opts, 130.0) {
                     set_format_defaults(f, &fmt, &app.session.prefs().export);
                 }

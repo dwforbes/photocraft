@@ -219,8 +219,12 @@ pub fn caps(format: Format) -> FormatCaps {
             FormatCaps { read: cfg!(feature = "heif"), write: false, depths: &[S::U8, S::U16], icc: true, exif: true, xmp: true, lossy: true, ..base }
         }
         // What the built-in encoder writes: the format itself also holds float samples, CMYK, ICC
-        // profiles and lossy data, and reading returns all of those except CMYK.
-        Format::Jxl => FormatCaps { depths: &[S::U8, S::U16], layouts: RGB_GRAY, exif: true, xmp: true, animation: true, ..base },
+        // profiles and lossy data, and reading returns all of those except CMYK. Not in the
+        // browser build (see `codecs::jxl`).
+        Format::Jxl => {
+            let native = cfg!(not(target_arch = "wasm32"));
+            FormatCaps { read: native, write: native, depths: &[S::U8, S::U16], layouts: RGB_GRAY, exif: true, xmp: true, animation: true, ..base }
+        }
     }
 }
 

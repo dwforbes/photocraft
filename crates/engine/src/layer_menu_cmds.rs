@@ -169,7 +169,7 @@ fn mask_from_transparency(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// Layer › Layer Mask › Hide Selection: a mask that hides the selected area.
 fn hide_selection(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = layer_param(s, p)?;
+    let ids = crate::layer_multi_cmds::mask_targets(s, p)?;
     s.edit("Add Layer Mask", |doc, _| {
         let sel = doc.selection.clone().ok_or_else(|| other("no selection"))?;
         let bounds = doc.bounds();
@@ -180,8 +180,10 @@ fn hide_selection(s: &mut Session, p: &Value) -> Result<Value> {
         let mut mask = LayerMask::reveal_all();
         mask.surface.write_region(bounds, &v);
         mask.surface.prune();
-        crate::extra_cmds::background_to_layer_for_mask(doc, id);
-        doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask);
+        for id in ids {
+            crate::extra_cmds::background_to_layer_for_mask(doc, id);
+            doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(mask.clone());
+        }
         doc.selection = None;
         Ok(Value::Null)
     })
@@ -879,7 +881,14 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         spec!("layer.layerMask.apply", "Apply", ["Layer", "Layer Mask"], r##"{"layer":id?}"##, has_raster_with_mask, apply_mask),
         spec!("layer.layerMask.fromTransparency", "From Transparency", ["Layer", "Layer Mask"], r##"{"layer":id?}"##, has_raster, mask_from_transparency),
-        spec!("layer.layerMask.hideSelection", "Hide Selection", ["Layer", "Layer Mask"], r##"{"layer":id?}"##, has_selection_layer, hide_selection),
+        spec!(
+            "layer.layerMask.hideSelection",
+            "Hide Selection",
+            ["Layer", "Layer Mask"],
+            r##"{"layer":id?} (no layer: every selected layer that can take a mask)"##,
+            has_selection_layer,
+            hide_selection
+        ),
         spec!("layer.maskAllObjects", "Mask All Objects", ["Layer"], r##"{"layer":id?}"##, has_layer, mask_all_objects),
         spec!("layer.matting.defringe", "Defringe…", ["Layer", "Matting"], r##"{"width":1..200=1}"##, has_raster, matting_defringe),
         spec!("layer.matting.removeBlackMatte", "Remove Black Matte", ["Layer", "Matting"], "{}", has_raster, |s, _| remove_matte(s, false)),
@@ -916,7 +925,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.layerStyle.blendingOptions",
             "Blending Options…",
             ["Layer", "Layer Style"],
-            r##"{"layer":id?,"blend":"normal|multiply|…"?,"opacity":0..100?,"fillOpacity":0..100?,"blendIf":{"channel":"gray|red|green|blue|cyan|…"|index="gray","thisLayer":[black,white]|[blackLo,blackHi,whiteLo,whiteHi]?,"underlying":[…]?}|[{…},…]|null?,"channels":[bool,…]?,"knockout":"none|shallow|deep"?,"blendInteriorEffectsAsGroup":bool?,"blendClippedLayersAsGroup":bool?,"transparencyShapesLayer":bool?,"layerMaskHidesEffects":bool?,"vectorMaskHidesEffects":bool?} (Blend If values 0..255; split points fade; null resets. Advanced Blending: channels = which colour channels blend (R G B / C M Y K / L a b); Photoshop's defaults are knockout none, interior effects off, clipped layers as group on, transparency shapes on, masks hide effects off)"##,
+            r##"{"layer":id?,"blend":"normal|multiply|…"?,"opacity":0..100?,"fillOpacity":0..100?,"blendIf":{"channel":"gray|red|green|blue|cyan|…"|index="gray","thisLayer":[black,white]|[blackLo,blackHi,whiteLo,whiteHi]?,"underlying":[…]?}|[{…},…]|null?,"channels":[bool,…]?,"knockout":"none|shallow|deep"?,"blendInteriorEffectsAsGroup":bool?,"blendClippedLayersAsGroup":bool?,"transparencyShapesLayer":bool?,"layerMaskHidesEffects":bool?,"vectorMaskHidesEffects":bool?} (Blend If values 0..255; split points fade; null resets. Advanced Blending: channels = which colour channels blend (R G B / C M Y K / L a b); PhotoCraft's defaults are knockout none, interior effects off, clipped layers as group on, transparency shapes on, masks hide effects off)"##,
             has_layer,
             blending_options
         ),

@@ -25,21 +25,23 @@ png = "0.18"
 tiff = { version = "0.11", default-features = false, features = ["deflate", "lzw"] }
 exr = { version = "1.73", default-features = false }
 half = "2"
+serde_json.workspace = true
 flate2.workspace = true
 image-webp = "0.2"
 zune-jpeg = "0.5"
 zune-core = "0.5"
 jpeg-encoder = "0.6"
 photocraft-heif = { path = "../heif", optional = true }
-# JPEG XL: decode with jxl-oxide (pure Rust, the full spec); the built-in encoder is zune-jpegxl
-# (pure Rust, lossless only). photocraft-io prefers libjxl's `cjxl` for writing when it is installed.
-# Pinned exactly: both parse or produce untrusted data; moving a pin re-runs the `decode_jxl` fuzz target.
-jxl-oxide = { version = "=0.12.6", default-features = false }
-zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std"] }
 
 # Orientation is applied a band of rows per task on native; wasm stays single-threaded.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon.workspace = true
+# JPEG XL: decode with jxl-oxide (pure Rust, the full spec); the built-in encoder is zune-jpegxl
+# (pure Rust, lossless only). photocraft-io prefers libjxl's `cjxl` for writing when it is installed.
+# Pinned exactly: both parse or produce untrusted data; moving a pin re-runs the `decode_jxl` fuzz target.
+# Native only, like photocraft-raw's JPEG XL DNG decoder: jxl-oxide adds about 0.88 MB to the browser
+# build's wasm, which has a hard per-file size cap (packaging/web/package.sh). There, JPEG XL is
+# recognised and reported as not included.
 jxl-oxide = { version = "=0.12.6", default-features = false, features = ["rayon"] }
 zune-jpegxl = { version = "=0.5.2", default-features = false, features = ["std", "threads"] }
 
