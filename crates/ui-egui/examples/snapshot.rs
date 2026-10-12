@@ -55,6 +55,7 @@ fn main() {
             }
             opts.encode.jxl_quality = settings.jxl_quality;
             opts.encode.heif_quality = settings.heif_quality;
+            opts.tga_bits = settings.tga_bits;
             photocraft_io::export(doc, path, &opts).map(|r| (r.bytes, r.warnings)).map_err(|e| e.to_string())
         })),
         write: Some(Box::new(|path: &str, bytes: &[u8]| photocraft_format::atomic_write(std::path::Path::new(path), bytes).map_err(|e| e.to_string()))),

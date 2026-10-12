@@ -38,7 +38,7 @@ pub(crate) fn copy(s: &mut Session) -> Result<Option<Value>> {
     let canvas = doc.bounds();
     // The surface the values come from, and which of its samples is the channel.
     let (src, k) = match d.channel_view.target {
-        ChannelTarget::Composite => return Ok(None),
+        ChannelTarget::Composite | ChannelTarget::LayerMask | ChannelTarget::VectorMask => return Ok(None),
         ChannelTarget::Color(k) => {
             let id = d.active_layer.ok_or_else(|| EngineError::Other("no active layer".into()))?;
             let surf = doc.layer(id).and_then(Layer::surface).ok_or_else(|| EngineError::Other("the active layer has no pixels".into()))?;
@@ -73,7 +73,7 @@ pub(crate) fn copy(s: &mut Session) -> Result<Option<Value>> {
     if bounds.is_empty() {
         return Err(EngineError::Other("Could not copy: the selected area is empty".into()));
     }
-    s.clipboard = Some(Clip { surface, bounds });
+    s.clipboard = Some(Clip { surface, bounds, layers: None });
     Ok(Some(json!({"bounds": [bounds.x0, bounds.y0, bounds.width(), bounds.height()], "channel": k})))
 }
 

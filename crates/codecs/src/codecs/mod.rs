@@ -1,6 +1,8 @@
 pub(crate) mod deep_exr;
 pub(crate) mod exr;
 pub(crate) mod exr_cryptomatte;
+pub(crate) mod fits;
+pub(crate) mod gif_frames;
 pub(crate) mod heif;
 pub(crate) mod jpeg;
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,6 +28,7 @@ pub(crate) mod jxl {
         Err(CodecError::unsupported(Format::Jxl, NOT_IN_BUILD))
     }
 }
+pub(crate) mod pcx;
 pub(crate) mod png;
 pub(crate) mod pnm;
 pub(crate) mod tiff;

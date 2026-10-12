@@ -133,6 +133,9 @@ mod ico {
 mod pnm {
     cases!(Format::Pnm);
 }
+mod fits {
+    cases!(Format::Fits);
+}
 mod qoi {
     cases!(Format::Qoi);
 }
