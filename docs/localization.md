@@ -25,6 +25,7 @@ contextual, command-ID and plural translations; missing entries fall back to Eng
 | Polski | `pl` | one / few (2–4, not 12–14) / many |
 | Ελληνικά | `el` | one / other |
 | Nederlands | `nl` | one / other |
+| Magyar | `hu` | one form |
 | Tiếng Việt | `vi` | one form |
 
 Languages registered with `complete_menus` cover the current menu labels, `tl!` literals, blend

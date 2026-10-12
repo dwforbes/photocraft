@@ -46,6 +46,28 @@ pub fn is_sizing(command: &str) -> bool {
     matches!(command, "image.imageSize" | "image.canvasSize")
 }
 
+/// Alt+Cancel (Reset): restore the dimensions and options from when the dialog opened.
+pub fn reset(f: &mut Map<String, Value>) {
+    if !f.contains_key("__sizing") {
+        return;
+    }
+    let w = num(f, "__origW");
+    let h = num(f, "__origH");
+    f.insert("width".into(), json!(w));
+    f.insert("height".into(), json!(h));
+    if f.get("__command").and_then(Value::as_str) == Some("image.imageSize") {
+        f.insert("resolution".into(), json!(num(f, "__origRes")));
+        f.insert("__constrain".into(), json!(true));
+        if let Some(r) = f.get("__resample").cloned() {
+            f.insert("resample".into(), r);
+        }
+    } else {
+        f.insert("relative".into(), json!(false));
+        f.insert("anchor".into(), json!("center"));
+        f.insert("extensionColor".into(), json!("background"));
+    }
+}
+
 pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     let unit = pref_unit(app.session.prefs().units_and_rulers.rulers);
     let resample = pref_resample(app.session.prefs().general.image_interpolation);
@@ -441,6 +463,22 @@ mod tests {
         d.fields.insert("anchor".into(), json!("topLeft"));
         crate::dialogs::confirm(&mut app, id).unwrap();
         assert_eq!(app.session.active().unwrap().doc.size, photocraft_doc::Size::new(120, 50));
+    }
+
+    #[test]
+    fn alt_reset_restores_open_dimensions() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 200, "height": 100, "resolution": 72})).unwrap();
+        let id = open(&mut app, "image.imageSize").unwrap();
+        let d = app.ui.dialog_mut(id).unwrap();
+        d.fields.insert("width".into(), json!(50));
+        d.fields.insert("height".into(), json!(25));
+        d.fields.insert("resolution".into(), json!(300));
+        d.fields.insert("__constrain".into(), json!(false));
+        reset(&mut d.fields);
+        assert_eq!((num(&d.fields, "width"), num(&d.fields, "height"), num(&d.fields, "resolution")), (200.0, 100.0, 72.0));
+        assert_eq!(d.fields.get("__constrain"), Some(&json!(true)));
+        assert!(app.ui.dialogs.iter().any(|x| x.id == id), "reset leaves the dialog open");
     }
 
     /// The dialog starts on Preferences › General › Image Interpolation: Bicubic Automatic opens

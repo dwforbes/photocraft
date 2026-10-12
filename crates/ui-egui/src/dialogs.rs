@@ -310,7 +310,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                         let can_ok = crate::crop_presets::can_confirm(app, &fields);
                         let ok = DialogButton::new(ButtonRole::Default, ok_label, 84.0).enabled(can_ok);
                         // Photoshop: holding Alt turns Cancel into Reset (the dialog stays open).
-                        let reset = ui.input(|i| i.modifiers.alt) && crate::adjust_dialog::resets(&fields);
+                        // Dialogs opt in via `dialog_alt_reset::supported` (per marker).
+                        let reset = ui.input(|i| i.modifiers.alt) && crate::dialog_alt_reset::supported(&fields);
                         let cancel_label = if reset {
                             tl!("Reset")
                         } else if d.kind == DialogKind::NewDocument {
@@ -337,7 +338,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                             dialog_buttons(ui, &[ok, cancel])
                         };
                         match clicked {
-                            Some(ButtonRole::Cancel) if reset => crate::adjust_dialog::reset(ui.ctx(), &mut fields),
+                            Some(ButtonRole::Cancel) if reset => crate::dialog_alt_reset::apply(app, ui.ctx(), &mut fields),
                             Some(ButtonRole::Cancel) => outcome = Some(false),
                             Some(ButtonRole::Apply) => apply_requested = true,
                             Some(_) => outcome = Some(true),

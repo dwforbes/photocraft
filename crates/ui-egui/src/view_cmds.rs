@@ -98,7 +98,8 @@ pub struct ViewOptions {
     pub guide_layout: Value,
 }
 
-fn default_guide_layout() -> Value {
+/// Factory New Guide Layout values (Alt+Reset and a fresh ViewOptions).
+pub(crate) fn default_guide_layout() -> Value {
     json!({"columns": 8, "gutter": 20, "rows": 0, "rowGutter": 0, "margin": 0, "centerColumns": false, "clearExisting": false})
 }
 
@@ -933,7 +934,20 @@ fn form(app: &mut PhotocraftApp, command: &str, label: &str, fields: Value, choi
     if let Value::Object(m) = fields {
         f.extend(m);
     }
+    // Snapshot user-facing params at open so Alt+Reset can restore them.
+    let orig: Map<String, Value> = f.iter().filter(|(k, _)| !k.starts_with("__")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    f.insert("__formOrig".into(), Value::Object(orig));
     app.ui.open_dialog(DialogKind::Command, f)
+}
+
+/// Alt+Cancel (Reset): restore the `__form` params captured at open.
+pub fn reset_form(f: &mut Map<String, Value>) {
+    if !f.contains_key("__form") {
+        return;
+    }
+    let Some(Value::Object(orig)) = f.get("__formOrig").cloned() else { return };
+    f.retain(|k, _| k.starts_with("__"));
+    f.extend(orig);
 }
 
 fn label_of(key: &str) -> String {
@@ -968,6 +982,25 @@ mod label_tests {
             assert_eq!(label_of("useAntialias"), "Use antialias");
             assert_eq!(label_of("radius"), "Radius");
         });
+    }
+}
+
+#[cfg(test)]
+mod form_reset_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn alt_reset_restores_form_orig() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        let id = form(&mut app, "test.form", "Test", json!({"radius": 5.0, "on": true}), json!({}));
+        let f = &mut app.ui.dialog_mut(id).unwrap().fields;
+        f.insert("radius".into(), json!(99.0));
+        f.insert("on".into(), json!(false));
+        reset_form(f);
+        assert_eq!(f["radius"], json!(5.0));
+        assert_eq!(f["on"], json!(true));
+        assert!(f.contains_key("__formOrig"));
     }
 }
 

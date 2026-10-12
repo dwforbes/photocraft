@@ -94,7 +94,7 @@ fn registered_languages(source: &str) -> Result<Vec<Language>, String> {
         let catalog = if code == "en" {
             None
         } else {
-            // `catalog!("xx")` embeds `xx.tsv` (deflated by ui-egui's build.rs).
+            // `catalog!("xx")` embeds `xx.tsv` (packed by ui-egui's build.rs).
             let marker = "catalog!(\"";
             let start = block.find(marker).ok_or_else(|| format!("language `{code}` has no catalog! entry"))? + marker.len();
             let rest = block.get(start..).ok_or_else(|| format!("language `{code}` has a malformed catalog path"))?;
@@ -579,6 +579,8 @@ mod tests {
             ("el", "el.tsv"),
             ("uk", "uk.tsv"),
             ("nl", "nl.tsv"),
+            ("hu", "hu.tsv"),
+            ("tr", "tr.tsv"),
             ("vi", "vi.tsv"),
         ] {
             let catalog_path = root.join("crates/ui-egui/src/i18n").join(path);

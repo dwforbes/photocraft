@@ -327,6 +327,70 @@ pub(crate) fn remember(app: &mut PhotocraftApp, command: &str, fields: &Map<Stri
     }
 }
 
+/// Schema-default values for one param of `command` (open and Alt+Reset share this).
+fn default_value(app: &PhotocraftApp, command: &str, p: &Param) -> Option<Value> {
+    Some(match &p.kind {
+        Kind::Range { default, .. } if command == "image.mode.indexedColor" && p.key == "colors" => json!(default.round().clamp(2.0, 256.0) as u32),
+        Kind::Range { default, .. } => json!(default),
+        Kind::Choice { options, default } => {
+            let initial = default.as_deref().or_else(|| options.first().map(String::as_str)).unwrap_or("");
+            json!(initial)
+        }
+        Kind::Bool(default) => json!(default),
+        Kind::Int { default } => json!(default),
+        Kind::Text => json!(""),
+        Kind::Document => json!(-1),
+        // Identity kernel: 1 in the centre.
+        Kind::Grid(n) => json!((0..*n).map(|i| i64::from(i == *n / 2)).collect::<Vec<_>>()),
+        Kind::Color(Some(rgb)) => json!(crate::color_picker_ui::hex(*rgb)),
+        Kind::Color(None) => return None,
+        // Colour inputs come from the current swatches, so the proxy preview matches the result.
+        Kind::Json if p.key == "foreground" => json!(app.session.tools.foreground),
+        Kind::Json if p.key == "background" => json!(app.session.tools.background),
+        Kind::Json => return None,
+    })
+}
+
+/// Command-specific open defaults (ruler straighten, warp from layer, …), not remembered prefs.
+fn apply_command_defaults(app: &PhotocraftApp, command: &str, fields: &mut Map<String, Value>) {
+    if command == "image.rotation.arbitrary" {
+        straighten_defaults(app, fields);
+    }
+    if command == "type.warpText" {
+        warp_defaults(app, fields);
+    }
+    // Photoshop's Pattern Name dialog starts from the name the pattern would get anyway.
+    if command == "edit.definePattern" {
+        fields.insert("name".into(), json!(photocraft_engine::pattern_cmds::default_name(&app.session)));
+    }
+    if command == "layer.layerStyle.globalLight" {
+        global_light_defaults(app, fields);
+    }
+    if command == "view.proofSetup" {
+        proof_setup_defaults(app, fields);
+    }
+}
+
+/// Alt+Cancel (Reset): schema defaults + command hooks, without last-used remembered prefs.
+pub fn reset_fields(app: &PhotocraftApp, fields: &mut Map<String, Value>) {
+    if !fields.contains_key("__filter") || fields.contains_key("__adjust") {
+        return;
+    }
+    let Some(command) = fields.get("__command").and_then(Value::as_str).map(str::to_owned) else { return };
+    let spec =
+        fields.get("__spec").and_then(Value::as_str).map(str::to_owned).or_else(|| photocraft_engine::commands::find(&command).map(|c| c.params.to_owned()));
+    let Some(spec) = spec else { return };
+    // Drop user params; keep private `__` chrome (and fixed keys outside the schema for `__spec`).
+    let schema_keys: std::collections::HashSet<String> = parse_spec(&spec).into_iter().map(|p| p.key).collect();
+    fields.retain(|k, _| k.starts_with("__") || !schema_keys.contains(k));
+    for p in parse_spec(&spec) {
+        if let Some(v) = default_value(app, &command, &p) {
+            fields.insert(p.key, v);
+        }
+    }
+    apply_command_defaults(app, &command, fields);
+}
+
 pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     let spec = photocraft_engine::commands::find(command)?;
     let mut fields = Map::new();
@@ -338,45 +402,12 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
         fields.insert("__preview".into(), json!(true));
     }
     for p in parse_spec(spec.params) {
-        let v = match &p.kind {
-            Kind::Range { default, .. } if command == "image.mode.indexedColor" && p.key == "colors" => json!(default.round().clamp(2.0, 256.0) as u32),
-            Kind::Range { default, .. } => json!(default),
-            Kind::Choice { options, default } => {
-                let initial = default.as_deref().or_else(|| options.first().map(String::as_str)).unwrap_or("");
-                json!(initial)
-            }
-            Kind::Bool(default) => json!(default),
-            Kind::Int { default } => json!(default),
-            Kind::Text => json!(""),
-            Kind::Document => json!(-1),
-            // Identity kernel: 1 in the centre.
-            Kind::Grid(n) => json!((0..*n).map(|i| i64::from(i == *n / 2)).collect::<Vec<_>>()),
-            Kind::Color(Some(rgb)) => json!(crate::color_picker_ui::hex(*rgb)),
-            Kind::Color(None) => continue,
-            // Colour inputs come from the current swatches, so the proxy preview matches the result.
-            Kind::Json if p.key == "foreground" => json!(app.session.tools.foreground),
-            Kind::Json if p.key == "background" => json!(app.session.tools.background),
-            Kind::Json => continue,
-        };
-        fields.insert(p.key, v);
+        if let Some(v) = default_value(app, command, &p) {
+            fields.insert(p.key, v);
+        }
     }
     restore_remembered(app, command, spec.params, &mut fields);
-    if command == "image.rotation.arbitrary" {
-        straighten_defaults(app, &mut fields);
-    }
-    if command == "type.warpText" {
-        warp_defaults(app, &mut fields);
-    }
-    // Photoshop's Pattern Name dialog starts from the name the pattern would get anyway.
-    if command == "edit.definePattern" {
-        fields.insert("name".into(), json!(photocraft_engine::pattern_cmds::default_name(&app.session)));
-    }
-    if command == "layer.layerStyle.globalLight" {
-        global_light_defaults(app, &mut fields);
-    }
-    if command == "view.proofSetup" {
-        proof_setup_defaults(app, &mut fields);
-    }
+    apply_command_defaults(app, command, &mut fields);
     if parse_spec(spec.params).iter().any(|p| p.kind == Kind::Document) {
         // The document picker lists every open document (params refer to them by index).
         let names: Vec<String> = app.session.documents().iter().map(|d| d.doc.name.clone()).collect();
@@ -816,6 +847,24 @@ mod tests {
         fields.insert("radius".into(), json!(2.0));
         restore_remembered(&app, "filter.blur.gaussianBlur", r#"{"radius":0.1..5=1}"#, &mut fields);
         assert_eq!(fields["radius"], json!(2.0));
+    }
+
+    #[test]
+    fn alt_reset_restores_schema_defaults_not_remembered() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
+        app.session.prefs.edit(|prefs| {
+            prefs.dialogs.insert("filter.blur.gaussianBlur".into(), json!({"radius": 11.0}));
+        });
+        let id = open(&mut app, "filter.blur.gaussianBlur").unwrap();
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields["radius"], json!(11.0));
+        let mut fields = app.ui.dialog_mut(id).unwrap().fields.clone();
+        reset_fields(&app, &mut fields);
+        app.ui.dialog_mut(id).unwrap().fields = fields;
+        let f = &app.ui.dialog_mut(id).unwrap().fields;
+        // Registry default for gaussian blur radius is 1.
+        assert_eq!(f["radius"], json!(1.0));
+        assert!(f.contains_key("__filter"));
+        assert!(app.ui.dialogs.iter().any(|d| d.id == id));
     }
 
     #[test]

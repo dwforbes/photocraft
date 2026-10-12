@@ -1019,6 +1019,14 @@ pub fn reset_color_balance(ctx: &egui::Context, mem: egui::Id, v: &mut Value) {
     ctx.data_mut(|d| d.insert_temp(color_balance_tone_id(mem), 1usize));
 }
 
+/// Kind-specific editor memory after Alt+Reset (or Properties Reset to defaults). Color Balance
+/// shows Midtones; other kinds have no dialog-local temp to clear yet.
+pub fn reset_adjustment_editor(ctx: &egui::Context, kind: &str, mem: egui::Id, v: &mut Value) {
+    if kind == "colorBalance" {
+        reset_color_balance(ctx, mem, v);
+    }
+}
+
 fn color_balance(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     let tone_id = color_balance_tone_id(cx.mem);
     let mut tone_ix: usize = ui.data(|d| d.get_temp(tone_id)).unwrap_or(1);
