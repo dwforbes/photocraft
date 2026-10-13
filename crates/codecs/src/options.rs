@@ -121,6 +121,38 @@ pub enum ExrCompression {
     Piz,
 }
 
+/// Bits per sample of a DPX file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpxBits {
+    Bits8,
+    Bits10,
+    Bits12,
+    Bits16,
+}
+
+impl DpxBits {
+    /// `8`, `10`, `12` or `16` as [`DpxBits`]; any other number is `None`.
+    pub fn from_bits(bits: u64) -> Option<Self> {
+        match bits {
+            8 => Some(DpxBits::Bits8),
+            10 => Some(DpxBits::Bits10),
+            12 => Some(DpxBits::Bits12),
+            16 => Some(DpxBits::Bits16),
+            _ => None,
+        }
+    }
+
+    /// The bits per sample.
+    pub fn bits(self) -> u8 {
+        match self {
+            DpxBits::Bits8 => 8,
+            DpxBits::Bits10 => 10,
+            DpxBits::Bits12 => 12,
+            DpxBits::Bits16 => 16,
+        }
+    }
+}
+
 /// Options for [`crate::encode`].
 #[derive(Debug, Clone)]
 pub struct EncodeOptions {
@@ -151,6 +183,8 @@ pub struct EncodeOptions {
     pub heif_quality: Option<u8>,
     /// JPEG XL encoder effort 1..=10 (cjxl's `-e`; higher is smaller and slower, 7 is the default).
     pub jxl_effort: u8,
+    /// DPX bits per sample. `None` follows the image: 8 for 8-bit, 16 otherwise.
+    pub dpx_bits: Option<DpxBits>,
     /// Embed the ICC profile when the format supports it.
     pub embed_icc: bool,
     /// Embed EXIF/XMP/DPI/text when the format supports it.
@@ -172,6 +206,7 @@ impl Default for EncodeOptions {
             jxl_quality: None,
             jxl_effort: 7,
             heif_quality: Some(80),
+            dpx_bits: None,
             embed_icc: true,
             embed_metadata: true,
         }

@@ -38,6 +38,7 @@ photocraft-testkit = { path = "crates/testkit" }
 photocraft-tablet = { path = "crates/tablet" }
 
 # external
+craft-print = { git = "https://github.com/storytold/craft-libs", rev = "d991bf6792f8ade99c51358bf3c1d902c8cd96b5" }
 thiserror = "2"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
@@ -139,3 +140,4 @@ opt-level = 3
 opt-level = 3
 [profile.wasm-release.package.photocraft-paint]
 opt-level = 3
+
