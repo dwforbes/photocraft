@@ -744,13 +744,16 @@ mod tests {
     #[test]
     fn save_as_offers_only_writable_formats_including_ico() {
         let layered = ["psd", "psb", "pcraft", "ora"];
+        // Written by photocraft-io through libheif's heif-enc or macOS sips (`heif_tool`), not
+        // by the codecs; without either, the export says what to install.
+        let helper_written = ["heic", "avif"];
         for (name, exts) in SAVE_FILTERS {
-            for ext in exts.iter().filter(|e| !layered.contains(e)) {
+            for ext in exts.iter().filter(|e| !layered.contains(e) && !helper_written.contains(e)) {
                 let format = photocraft_codecs::from_extension(ext).unwrap_or_else(|| panic!("{name}: .{ext} is no known format"));
                 assert!(format.caps().write, "{name}: .{ext} can't be written");
             }
         }
-        for ext in ["ico", "gif", "bmp"] {
+        for ext in ["ico", "gif", "bmp", "jxl", "heic", "avif"] {
             assert!(save_filters("Untitled-1.psd").iter().any(|(_, exts)| exts.iter().any(|e| e == ext)), ".{ext} is offered");
         }
         assert_eq!(save_filters("icon.ico")[0].0, "ICO", "an .ico name leads with its own type");
