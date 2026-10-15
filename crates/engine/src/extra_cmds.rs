@@ -522,11 +522,16 @@ fn delete_where(s: &mut Session, label: &str, pred: fn(&Layer) -> bool) -> Resul
             n
         }
         let backup = doc.layers.clone();
+        // The clip groups of the doomed layers, read before they go (clip_group rule 3: layers
+        // clipped to a deleted base are released).
+        let doomed: Vec<LayerId> = doc.walk().into_iter().filter(|(_, _, l)| pred(l)).map(|(_, _, l)| l.id).collect();
+        let before = crate::clip_group::Before::read(doc, &doomed);
         let n = rec(&mut doc.layers, pred);
         if doc.layers.is_empty() {
             doc.layers = backup;
             return Err(EngineError::Other("a document must keep at least one layer".into()));
         }
+        crate::clip_group::settle(doc, &[], &before, false);
         if active.is_none_or(|id| doc.layer(id).is_none()) {
             *active = doc.top_layer();
         }
@@ -878,8 +883,17 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("layer.layerStyle.copyLayerStyle", "Copy Layer Style", &["Layer", "Layer Style"], None, r##"{"layer":id?}"##, has_layer, |s, p| {
             let id = layer_param(s, p)?;
-            let l = s.active().and_then(|d| d.doc.layer(id)).ok_or(EngineError::NoLayer(id))?;
-            let style = (l.effects.clone(), l.blend, l.fill_opacity, l.advanced);
+            let d = s.active().ok_or(EngineError::NoDocument)?;
+            let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+            let style = crate::CopiedStyle {
+                effects: l.effects.clone(),
+                blend: l.blend,
+                fill: l.fill_opacity,
+                advanced: l.advanced,
+                blend_if: l.blend_if.clone(),
+                excluded_channels: l.excluded_channels,
+                mode: d.doc.mode,
+            };
             s.style_clipboard = Some(style);
             Ok(Value::Null)
         }),
@@ -895,17 +909,32 @@ pub fn specs() -> Vec<CommandSpec> {
             },
             |s, p| {
                 let ids = style_targets(s, p, |_| true)?;
-                let (mut fx, blend, fill, advanced) = s.style_clipboard.clone().ok_or(EngineError::Other("no layer style has been copied".into()))?;
+                let style = s.style_clipboard.clone().ok_or(EngineError::Other("no layer style has been copied".into()))?;
+                let mut fx = style.effects;
                 s.edit("Paste Layer Style", |doc, _| {
                     // A style copied from a document in another mode takes this one's colours.
                     let mode = doc.mode;
                     fx.items = std::mem::take(&mut fx.items).into_iter().map(|e| e.in_mode(mode)).collect();
+                    // Blend If's Gray range carries over to any mode; its channel ranges and the
+                    // channel restrictions only to the mode they were set in.
+                    let same_mode = style.mode == mode;
+                    let blend_if = if same_mode {
+                        style.blend_if.clone()
+                    } else {
+                        // Through `set`, which keeps the normalised form (no trailing full
+                        // entries), so a full Gray range pastes as the default.
+                        let mut gray = photocraft_doc::BlendIf::default();
+                        gray.set(0, style.blend_if.get(0));
+                        gray
+                    };
                     for id in ids {
                         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
                         l.effects = fx.clone();
-                        l.blend = blend;
-                        l.fill_opacity = fill;
-                        l.advanced = advanced;
+                        l.blend = style.blend;
+                        l.fill_opacity = style.fill;
+                        l.advanced = style.advanced;
+                        l.blend_if = blend_if.clone();
+                        l.excluded_channels = if same_mode { style.excluded_channels } else { 0 };
                     }
                     Ok(())
                 })?;
@@ -1549,7 +1578,7 @@ mod tests {
         // Layer 1 is already the only visible layer: ⌥-clicking it shows everything.
         assert_eq!(s.execute("layer.showOnly", json!({})).unwrap()["shownAlone"], false);
         assert!(doc(&s).layers.iter().all(|l| l.visible));
-        assert!(s.execute("layer.showOnly", json!({"layer": 9999})).is_err());
+        assert!(s.execute("layer.showOnly", json!({"layer": u64::MAX})).is_err());
         assert!(Session::new().execute("layer.showOnly", json!({})).is_err());
     }
 
@@ -1624,7 +1653,7 @@ mod tests {
         let bg_locks = doc(&s).layer(bg).unwrap().locks;
         assert!(s.execute("layer.toggleLockTransparency", json!({"layer": bg.0})).is_err());
         assert_eq!(doc(&s).layer(bg).unwrap().locks, bg_locks, "the Background is left alone");
-        assert!(s.execute("layer.toggleLockTransparency", json!({"layer": 999_999})).is_err());
+        assert!(s.execute("layer.toggleLockTransparency", json!({"layer": u64::MAX})).is_err());
     }
 
     #[test]
