@@ -808,6 +808,12 @@ pub struct PhotocraftApp {
     /// `jobs_ui`). The desktop app turns it on; off (the default), everything runs inline as
     /// before, which tests and scripts rely on.
     pub background_jobs: bool,
+    /// Shortest time between frames (ms), or `None` for no cap. A present mode that doesn't wait
+    /// for the display (Low-Latency Drawing) would otherwise redraw as fast as it can while
+    /// anything keeps requesting repaints (a drag hovering, autoscroll, Liquify held still).
+    /// After #4472 (astigmata).
+    pub min_frame_ms: Option<f64>,
+    last_frame_start_ms: f64,
     /// Background job bookkeeping: opening tabs, control replies waiting on a job.
     pub jobs: jobs_ui::JobsUi,
     #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
@@ -943,6 +949,8 @@ impl PhotocraftApp {
             allow_close: false,
             stylus: Default::default(),
             background_jobs: false,
+            min_frame_ms: None,
+            last_frame_start_ms: 0.0,
             jobs: Default::default(),
             #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
             live_tokens: theme::live::LiveTokens::from_env(),
@@ -1051,6 +1059,21 @@ impl PhotocraftApp {
             && let Some(authorize) = self.services.automation_command.as_ref()
         {
             authorize(id, &params)?;
+        }
+        // A new layer while Free Transform is open applies the transform first, as Photoshop does
+        // (#5667): History reads the transform (or Place Embedded), then New Layer. Only for a
+        // command that can run; a transform refused or still being applied keeps the box open and
+        // the command doesn't run.
+        if photocraft_engine::PRECHECKED.contains(&id) && self.ui.transform.is_some() {
+            // Bad params or a command that can't run leave the box as it is.
+            self.session.precheck(id, &params).map_err(|e| e.to_string())?;
+            transform_tool::commit(self);
+            if transform_tool::committing(self).is_some() {
+                return Err(tl!("Free Transform is still being applied; try again when it has finished.").into());
+            }
+            if self.ui.transform.is_some() {
+                return Err(if self.ui.status.is_empty() { tl!("The transform couldn't be applied.").into() } else { self.ui.status.clone() });
+            }
         }
         if let Some(result) = panel_docking::command(self, id, &params) {
             return result;
@@ -1767,6 +1790,20 @@ impl PhotocraftApp {
     }
 }
 
+impl PhotocraftApp {
+    /// Wait out the rest of [`Self::min_frame_ms`] since the last frame started.
+    fn cap_frame_rate(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(min) = self.min_frame_ms.filter(|m| m.is_finite() && *m > 0.0) {
+            let wait = min.min(100.0) - (gpu_canvas::now_ms() - self.last_frame_start_ms);
+            if wait > 0.0 {
+                std::thread::sleep(std::time::Duration::from_secs_f64(wait / 1000.0));
+            }
+        }
+        self.last_frame_start_ms = gpu_canvas::now_ms();
+    }
+}
+
 impl eframe::App for PhotocraftApp {
     fn on_exit(&mut self) {
         if let Err(err) = tool_memory::save_on_exit(self) {
@@ -1775,6 +1812,7 @@ impl eframe::App for PhotocraftApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.cap_frame_rate();
         i18n::set_current(i18n::Lang::from_pref(&self.session.prefs().interface.language));
         // Caps Lock state read from the OS once per frame (see `Services::caps_lock`): the canvas
         // cursor block needs it before the frame renders. `None` (Wayland/web) keeps `false`.
@@ -2012,7 +2050,10 @@ impl eframe::App for PhotocraftApp {
         if self.stroke_trace.enabled() {
             self.stroke_trace.canvas(self.perf.frame_refresh_ms);
             let info = &self.perf.gpu_info;
-            self.stroke_trace.end_frame(ui_ms, self.live_stroke.is_some(), || format!("{} {}", info.backend, info.adapter).trim().to_string());
+            self.stroke_trace.end_frame(ui_ms, self.live_stroke.is_some(), || {
+                let gpu = format!("{} {}", info.backend, info.adapter).trim().to_string();
+                if info.present.is_empty() { gpu } else { format!("{gpu}, {}", info.present) }
+            });
         }
         // Synthetic input is injected one press/release step per frame: keep frames coming until
         // the queue is empty, then release control replies waiting on it.
@@ -2646,6 +2687,10 @@ mod pixel_aspect_tests;
 #[cfg(test)]
 mod transform_fx_tests;
 
+#[cfg(test)]
+mod layer_props_ui_tests;
+#[cfg(test)]
+mod transform_switch_tests;
 #[cfg(test)]
 mod transform_undo_tests;
 

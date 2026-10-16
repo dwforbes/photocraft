@@ -1487,7 +1487,15 @@ pub fn specs() -> Vec<CommandSpec> {
             link_layers(s)
         }),
         spec!("layer.mergeLayers", "Merge Layers", &["Layer"], Some("Cmd+E"), "{} (one layer selected: Merge Down)", has_layer, |s, _| merge_layers(s)),
-        spec!("layer.new.groupFromLayers", "Group from Layers…", &["Layer", "New"], None, r##"{"name":str?}"##, has_layer, group_layers),
+        spec!(
+            "layer.new.groupFromLayers",
+            "Group from Layers…",
+            &["Layer", "New"],
+            None,
+            r##"{"layer":id?,"name":str?} (no layer: every selected layer)"##,
+            has_layer,
+            group_layers
+        ),
         spec!("layer.arrange.reverse", "Reverse", &["Layer", "Arrange"], None, "{}", two_plus, |s, _| reverse(s)),
         spec!(
             "layer.lockLayers",

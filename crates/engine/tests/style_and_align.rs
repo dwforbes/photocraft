@@ -97,3 +97,19 @@ fn several_layers_align_to_an_active_selection() {
         assert_eq!(x0, 40, "layer {id} aligned to the selection's left edge");
     }
 }
+
+#[test]
+fn a_groups_pass_through_pastes_onto_a_pixel_layer_as_normal() {
+    let mut s = Session::new();
+    let (a, _) = new_doc(&mut s, "rgb");
+    let g = s.execute("layer.new.group", json!({})).unwrap()["layer"].as_u64().unwrap();
+    assert_eq!(layer(&s, g).blend, photocraft_color::BlendMode::PassThrough);
+    s.execute("layer.layerStyle.copyLayerStyle", json!({"layer": g})).unwrap();
+    s.execute("layer.layerStyle.pasteLayerStyle", json!({"layer": a})).unwrap();
+    assert_eq!(layer(&s, a).blend, photocraft_color::BlendMode::Normal, "Pass Through isn't a pixel layer's mode");
+    // Onto another group it stays Pass Through.
+    let g2 = s.execute("layer.new.group", json!({})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("layer.setProps", json!({"layer": g2, "blend": "Multiply"})).unwrap();
+    s.execute("layer.layerStyle.pasteLayerStyle", json!({"layer": g2})).unwrap();
+    assert_eq!(layer(&s, g2).blend, photocraft_color::BlendMode::PassThrough);
+}

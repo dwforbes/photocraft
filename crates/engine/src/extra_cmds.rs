@@ -930,7 +930,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     for id in ids {
                         let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
                         l.effects = fx.clone();
-                        l.blend = style.blend;
+                        // Pass Through is a group's mode: a group's style pastes onto other layers as
+                        // Normal, as a merged group's Pass Through becomes Normal.
+                        l.blend = if style.blend == photocraft_color::BlendMode::PassThrough && !l.is_group() {
+                            photocraft_color::BlendMode::Normal
+                        } else {
+                            style.blend
+                        };
                         l.fill_opacity = style.fill;
                         l.advanced = style.advanced;
                         l.blend_if = blend_if.clone();
