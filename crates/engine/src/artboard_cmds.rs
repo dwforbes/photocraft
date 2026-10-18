@@ -92,10 +92,12 @@ fn preset_size(name: &str) -> Option<(u32, u32)> {
 }
 
 fn background_param(p: &Value, cmd: &str) -> Result<Option<ArtboardBackground>> {
-    let custom = p.get("color").map(|_| {
-        let c = color_param(p, "color", [1.0; 4]);
-        ArtboardBackground::Custom(Color::rgba(c[0], c[1], c[2], c[3]))
-    });
+    let custom = if p.get("color").is_some() {
+        let c = color_param(cmd, p, "color", [1.0; 4])?;
+        Some(ArtboardBackground::Custom(Color::rgba(c[0], c[1], c[2], c[3])))
+    } else {
+        None
+    };
     Ok(match p.get("background").and_then(Value::as_str) {
         None => custom,
         Some("white") => Some(ArtboardBackground::White),
@@ -528,7 +530,7 @@ fn chosen_artboards(doc: &Document, p: &Value) -> Vec<LayerId> {
     }
 }
 
-/// File › Export › Artboards to Files: `<prefix>_<artboard name>.<format>` per board.
+/// File › Export › Artboards to Files: `<prefix>_<index:04>_<artboard name>.<format>` per board.
 fn artboards_to_files(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.export.artboardsToFiles";
     let dir = str_param(p, "dir", cmd).or_else(|_| str_param(p, "output", cmd))?.to_string();
@@ -538,8 +540,9 @@ fn artboards_to_files(s: &mut Session, p: &Value) -> Result<Value> {
     let prefix = p.get("prefix").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| stem(&d.doc.name));
     let doc = d.doc.clone();
     let mut files = Vec::new();
-    for one in chosen_documents(&doc, p)? {
-        let name = if prefix.is_empty() { sanitize(&one.name) } else { format!("{}_{}", sanitize(&prefix), sanitize(&one.name)) };
+    for (i, one) in chosen_documents(&doc, p)?.into_iter().enumerate() {
+        // Names may be identical, or collide after sanitizing or filesystem case folding.
+        let name = if prefix.is_empty() { format!("{i:04}_{}", sanitize(&one.name)) } else { format!("{}_{i:04}_{}", sanitize(&prefix), sanitize(&one.name)) };
         let path = join(&dir, &format!("{name}.{format}"));
         save_doc(&one, &path, save)?;
         files.push(path);

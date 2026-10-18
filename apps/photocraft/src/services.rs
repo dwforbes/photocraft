@@ -36,16 +36,47 @@ fn open_filter_extensions(extensions: &[&str]) -> Vec<String> {
     extensions.iter().map(|ext| if case_sensitive_globs { ext.chars().map(class).collect() } else { ext.to_string() }).collect()
 }
 
-/// An explicit SVG filter keeps vector artwork discoverable even when a native picker defaults to
-/// the PhotoCraft-only filter. SVG is also included in All Formats for normal multi-format opens.
+/// File › Open's file types after All Formats, as Photoshop lists them: one per format, so a folder
+/// of mixed files can be narrowed to one kind (#6337). Together they cover every extension of
+/// [`OPEN_EXTS`]. An explicit SVG filter also keeps vector artwork discoverable when a native
+/// picker defaults to another filter.
+const OPEN_FILTERS: &[(&str, &[&str])] = &[
+    ("PhotoCraft", &["pcraft"]),
+    ("Photoshop", &["psd", "psb", "psdt"]),
+    ("Affinity", &["af", "afdesign", "afphoto", "afpub"]),
+    ("Krita", &["kra", "krz"]),
+    ("OpenRaster", &["ora"]),
+    ("Paint.NET", &["pdn"]),
+    ("SVG", SVG_EXTS),
+    ("PNG", &["png"]),
+    ("JPEG", &["jpg", "jpeg"]),
+    ("HEIF", &["heic", "heif", "hif"]),
+    ("TIFF", &["tif", "tiff"]),
+    ("WebP", &["webp"]),
+    ("GIF", &["gif"]),
+    ("BMP", &["bmp"]),
+    ("Targa", &["tga"]),
+    ("ICO", &["ico"]),
+    ("QOI", &["qoi"]),
+    ("PCX", &["pcx"]),
+    ("DDS", &["dds"]),
+    ("XPM", &["xpm"]),
+    ("Portable Bitmap", &["pbm", "pgm", "ppm", "pam", "pfm"]),
+    ("OpenEXR", &["exr"]),
+    ("Radiance HDR", &["hdr"]),
+    ("FITS", &["fits", "fit", "fts"]),
+    ("DPX and Cineon", &["dpx", "cin"]),
+    ("Camera Raw", &["dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf"]),
+    ("Brushes", &["abr"]),
+    ("Gradients", &["grd"]),
+    ("Swatches", &["aco", "ase"]),
+    ("Keyboard Shortcuts", &["kys"]),
+];
+
 fn open_filters() -> Vec<(&'static str, Vec<String>)> {
-    vec![
-        ("All Formats", open_filter_extensions(OPEN_EXTS)),
-        ("PhotoCraft", open_filter_extensions(&["pcraft"])),
-        ("OpenRaster", open_filter_extensions(&["ora"])),
-        ("Krita", open_filter_extensions(&["kra", "krz"])),
-        ("SVG", open_filter_extensions(SVG_EXTS)),
-    ]
+    std::iter::once(("All Formats", open_filter_extensions(OPEN_EXTS)))
+        .chain(OPEN_FILTERS.iter().map(|(name, exts)| (*name, open_filter_extensions(exts))))
+        .collect()
 }
 
 /// File › Save As formats: (filter name, extensions). The filter matching the suggested name's
@@ -163,10 +194,7 @@ fn show_file_dialog(request: FileDialogRequest, parent: Option<&eframe::Frame>, 
             let dialog = if let Some(exts) = extensions {
                 dialog.add_filter("Supported Files", &open_filter_extensions(&exts.iter().map(String::as_str).collect::<Vec<_>>()))
             } else {
-                open_filters()
-                    .into_iter()
-                    .fold(dialog, |dialog, (name, extensions)| dialog.add_filter(name, &extensions))
-                    .add_filter("Paint.NET", &open_filter_extensions(&["pdn"]))
+                open_filters().into_iter().fold(dialog, |dialog, (name, extensions)| dialog.add_filter(name, &extensions))
             };
             if multiple {
                 let picked = dialog.pick_files();
@@ -267,8 +295,8 @@ fn block_on<T>(future: impl Future<Output = T>) -> T {
 }
 
 /// Per-user settings directory: `PHOTOCRAFT_CONFIG_DIR`, else `<exe dir>/PhotoCraftData` in
-/// portable mode, else the platform convention. Everything the app persists lives under it; see
-/// [`crate::app_dirs`].
+/// portable mode, else the platform convention. Everything the app persists lives under it
+/// except, on Windows, crash-recovery autosaves; see [`crate::app_dirs`].
 pub fn config_dir() -> Option<PathBuf> {
     crate::app_dirs::config_dir()
 }
@@ -283,8 +311,10 @@ pub fn presets_dir() -> Option<PathBuf> {
     config_dir().map(|d| d.join("Presets"))
 }
 
+/// Crash-recovery autosaves: under the settings directory, except on Windows, where they stay
+/// out of the roaming profile (see [`crate::app_dirs::recovery_dir`]).
 fn recovery_dir() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("Recovery"))
+    crate::app_dirs::recovery_dir()
 }
 
 /// Write `bytes` crash-safely (temp file beside the target, fsync, rename, directory fsync; see
@@ -507,6 +537,11 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         save_file: Some(Arc::new(save_file)),
         file_dialog: Some(Box::new(show_file_dialog)),
         write: Some(Box::new(|path: &str, bytes: &[u8]| write_atomic(Path::new(path), bytes))),
+        file_stamp: Some(Box::new(|path: &str| {
+            // Follows a symlink, as Save writes through it to the file it points at.
+            let meta = std::fs::metadata(path).ok()?;
+            Some(photocraft_ui_egui::FileStamp { len: meta.len(), modified: meta.modified().ok() })
+        })),
         automation_read,
         automation_write,
         automation_open_pcraft,
@@ -723,6 +758,26 @@ mod tests {
         let svg_filter = open_filters().into_iter().find(|(name, _)| *name == "SVG").map(|(_, exts)| exts).unwrap_or_default();
         assert_eq!(svg_filter, open_filter_extensions(SVG_EXTS));
         assert!(svg_filter.iter().any(|glob| matches(glob, "svg")) && svg_filter.iter().any(|glob| matches(glob, "svgz")));
+    }
+
+    /// #6337: after All Formats, every format File › Open reads has its own filter, and no filter
+    /// offers an extension All Formats doesn't.
+    #[test]
+    fn every_open_format_has_its_own_filter() {
+        let filters = open_filters();
+        assert_eq!(filters[0], ("All Formats", open_filter_extensions(OPEN_EXTS)), "All Formats comes first");
+        let mut named: Vec<&str> = OPEN_FILTERS.iter().flat_map(|(_, exts)| exts.iter().copied()).collect();
+        let total = named.len();
+        named.sort_unstable();
+        named.dedup();
+        assert_eq!(named.len(), total, "an extension is listed under two filters");
+        let mut all = OPEN_EXTS.to_vec();
+        all.sort_unstable();
+        assert_eq!(named, all, "the named filters cover All Formats exactly");
+        let names: Vec<&str> = filters.iter().map(|(name, _)| *name).collect();
+        for name in ["Photoshop", "Affinity", "HEIF", "PNG", "JPEG", "TIFF", "Portable Bitmap", "OpenEXR", "Radiance HDR", "Paint.NET"] {
+            assert!(names.contains(&name), "{name}");
+        }
     }
 
     #[cfg(not(all(unix, not(target_os = "macos"))))]

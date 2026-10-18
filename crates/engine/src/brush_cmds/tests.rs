@@ -371,6 +371,57 @@ fn resizing_a_brush_resizes_its_enabled_secondary_tip() {
     assert_eq!((s.tools.brush.size, s.tools.brush.dual_brush.size), (40.0, 9.0));
 }
 
+/// Every way of changing the main size scales the Dual Brush tip as Photoshop does (#4809): `[` /
+/// `]`, the options bar / Brushes panel / Alt+right-drag (`tools.setBrush` with only a size), down
+/// to 1 px and back without losing the proportion to a floor.
+#[test]
+fn every_size_change_scales_the_dual_tip_and_keeps_its_proportion() {
+    let mut s = session(32, 32);
+    s.execute("tools.setBrush", json!({"brush": {"size": 100, "dualBrush": {"enabled": true, "size": 20}}})).unwrap();
+    let sizes = |s: &Session| (s.tools.brush.size, s.tools.brush.dual_brush.size);
+    s.execute("tools.decreaseBrushSize", json!({})).unwrap();
+    assert_eq!(sizes(&s), (80.0, 16.0));
+    s.execute("tools.increaseBrushSize", json!({})).unwrap();
+    assert_eq!(sizes(&s), (100.0, 20.0));
+    // A coalesced drag (options bar slider, Alt+right-drag) is a run of size-only patches.
+    for size in [60, 10, 1] {
+        s.execute("tools.setBrush", json!({"brush": {"size": size}, "coalesce": "drag"})).unwrap();
+    }
+    assert_eq!(s.tools.brush.size, 1.0);
+    assert!((s.tools.brush.dual_brush.size - 0.2).abs() < 1e-5, "no 0.5 px floor: {}", s.tools.brush.dual_brush.size);
+    s.execute("tools.setBrush", json!({"brush": {"size": 100}})).unwrap();
+    assert_eq!(s.tools.brush.size, 100.0);
+    assert!((s.tools.brush.dual_brush.size - 20.0).abs() < 1e-3, "back to 20 px: {}", s.tools.brush.dual_brush.size);
+    // Painting with the sub-pixel dual tip works (the renderer bounds it).
+    s.execute("tools.setBrush", json!({"brush": {"size": 1}})).unwrap();
+    s.execute("paint.stroke", json!({"points": [[4, 16], [28, 16]]})).unwrap();
+}
+
+/// Picking a preset that captured its size sets both diameters from the preset: the dual tip is
+/// not scaled on top of that.
+#[test]
+fn a_captured_preset_size_is_not_scaled_twice() {
+    let mut s = session(32, 32);
+    s.execute("tools.setBrush", json!({"size": 40, "dualBrush": {"enabled": true, "size": 10}})).unwrap();
+    s.execute("brush.presets.save", json!({"name": "Dual40"})).unwrap();
+    s.execute("tools.setBrush", json!({"size": 200})).unwrap();
+    assert_eq!(s.tools.brush.dual_brush.size, 50.0);
+    s.execute("tools.setBrush", json!({"preset": "Dual40"})).unwrap();
+    assert_eq!((s.tools.brush.size, s.tools.brush.dual_brush.size), (40.0, 10.0));
+}
+
+#[test]
+fn bad_sizes_fail_and_leave_the_dual_tip_alone() {
+    let mut s = session(32, 32);
+    s.execute("tools.setBrush", json!({"brush": {"size": 100, "dualBrush": {"enabled": true, "size": 20}}})).unwrap();
+    for bad in [json!(1e30), json!("big"), json!([1]), json!({"x": 1}), json!(null)] {
+        let _ = s.execute("tools.setBrush", json!({"brush": {"size": bad}}));
+        assert_eq!(s.tools.brush.dual_brush.size, 20.0, "{bad}");
+        assert_eq!(s.tools.brush.size, 100.0, "{bad}");
+    }
+    assert!(s.execute("tools.setBrush", json!({"brush": {"size": 1e30}})).is_err());
+}
+
 #[test]
 fn an_uncaptured_preset_size_keeps_dual_brush_proportions() {
     let mut s = session(32, 32);
@@ -440,6 +491,26 @@ fn define_brush_from_selection() {
     s.execute("select.deselect", json!({})).unwrap();
     s.execute("paint.stroke", json!({"points": [[30, 32]], "color": "#ff0000"})).unwrap();
     assert!(rgba(&s, 30, 32)[3] > 0.9);
+}
+
+#[test]
+fn define_brush_from_selection_survives_allocation_failure() {
+    // The sampled tip is one f32 buffer over the whole selection, and the selection mask is a
+    // second of the same size. Both are reserved through the fallible allocator, so an allocation
+    // failure must be a graceful error (brush, presets, history and document untouched), never a
+    // panic or an OOM abort.
+    let mut s = session(40, 40);
+    s.execute("select.rect", json!({"x": 5, "y": 5, "width": 20, "height": 20})).unwrap();
+    let brush_before = s.tools.brush.clone();
+    let presets_before = s.tools.presets.clone();
+    let history_before = s.active().unwrap().history.past_len();
+    crate::allocation::fail_next_for_test();
+    let result = s.execute("brush.defineFromSelection", json!({"name": "Blob"}));
+    let _ = crate::allocation::capacity::<u8>(0, "reset failpoint");
+    assert!(result.is_err(), "an allocation failure must be reported, not panic");
+    assert_eq!(s.tools.brush, brush_before, "the current brush is unchanged");
+    assert_eq!(s.tools.presets, presets_before, "the preset list is unchanged");
+    assert_eq!(s.active().unwrap().history.past_len(), history_before, "no history step was recorded");
 }
 
 #[test]
