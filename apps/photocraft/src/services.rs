@@ -50,7 +50,9 @@ const OPEN_FILTERS: &[(&str, &[&str])] = &[
     ("SVG", SVG_EXTS),
     ("PNG", &["png"]),
     ("JPEG", &["jpg", "jpeg"]),
+    ("JPEG XL", &["jxl"]),
     ("HEIF", &["heic", "heif", "hif"]),
+    ("AVIF", &["avif"]),
     ("TIFF", &["tif", "tiff"]),
     ("WebP", &["webp"]),
     ("GIF", &["gif"]),
@@ -775,7 +777,7 @@ mod tests {
         all.sort_unstable();
         assert_eq!(named, all, "the named filters cover All Formats exactly");
         let names: Vec<&str> = filters.iter().map(|(name, _)| *name).collect();
-        for name in ["Photoshop", "Affinity", "HEIF", "PNG", "JPEG", "TIFF", "Portable Bitmap", "OpenEXR", "Radiance HDR", "Paint.NET"] {
+        for name in ["Photoshop", "Affinity", "HEIF", "AVIF", "PNG", "JPEG", "JPEG XL", "TIFF", "Portable Bitmap", "OpenEXR", "Radiance HDR", "Paint.NET"] {
             assert!(names.contains(&name), "{name}");
         }
     }
