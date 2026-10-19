@@ -311,6 +311,19 @@ mod tests {
         assert_eq!(corner, [0.0, 1.0, 0.0, 1.0]);
     }
 
+    /// #7557: a quad low on a strongly converging photo (its horizon crosses the canvas, with the
+    /// canvas centre beyond it) is cropped, not left blank in the background colour.
+    #[test]
+    fn a_quad_below_a_horizon_across_the_canvas_keeps_its_content() {
+        let mut doc = Document::with_background("red", Size::new(100, 100), ColorMode::Rgb, SampleType::U8, Color::WHITE);
+        doc.layers[0].surface_mut().unwrap().fill_rect(Rect::from_xywh(0, 0, 100, 100), &[1.0, 0.0, 0.0, 1.0]);
+        let mut s = Session::new();
+        s.add_document(doc, None);
+        s.execute(CMD, json!({"corners": [[40, 70], [60, 70], [90, 95], [10, 95]], "width": 50, "height": 39})).unwrap();
+        let px = s.active().unwrap().doc.layers[0].surface().unwrap().rgba(25, 20);
+        assert_eq!(px, [1.0, 0.0, 0.0, 1.0]);
+    }
+
     /// Bad quads and params are refused with an error, and the document is untouched.
     #[test]
     fn perspective_crop_rejects_bad_quads() {
