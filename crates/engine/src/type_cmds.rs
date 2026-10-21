@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use photocraft_color::Color;
 use photocraft_doc::text::{
-    AntiAlias, Caps, CharStyle, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection, TextRun, TextShape,
+    AntiAlias, Caps, CharStyle, FontBaseline, FontFeature, FontVariation, Kerning, Orientation, ParagraphRun, ParagraphStyle, TextAlign, TextDirection,
+    TextRun, TextShape,
 };
 use photocraft_doc::{Affine, Document, Layer, LayerContent, LayerId, TextLayer};
 use serde_json::{Value, json};
@@ -363,6 +364,14 @@ pub fn apply_char_props(s: &mut CharStyle, p: &Value) -> bool {
         };
         hit(true);
     }
+    if let Some(v) = p.get("baseline").and_then(Value::as_str) {
+        s.baseline = match v {
+            "superscript" => FontBaseline::Superscript,
+            "subscript" => FontBaseline::Subscript,
+            _ => FontBaseline::Normal,
+        };
+        hit(true);
+    }
     if let Some(Value::Object(m)) = p.get("features") {
         for (tag, v) in m {
             let value = v.as_u64().map(|x| x as u16).or_else(|| v.as_bool().map(u16::from)).unwrap_or(1);
@@ -664,6 +673,10 @@ pub(crate) fn with_text_targets(
     mut f: impl FnMut(&mut TextLayer, (usize, usize)) -> Result<()>,
 ) -> Result<Vec<LayerId>> {
     let ids = format_targets(s, p)?;
+    let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    for id in &ids {
+        check_text_unlocked(doc, *id)?;
+    }
     let damage = s.edit(label, |doc, _| {
         let snapshot = doc.clone();
         let mut damage = Some(photocraft_geom::Rect::EMPTY);
@@ -822,7 +835,7 @@ pub(crate) fn new_text_layer(s: &Session, p: &Value, cmd: &str) -> Result<TextLa
     Ok(t)
 }
 
-const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
+const CHAR_PARAMS: &str = r##""font":str,"fontStyle":str,"weight":100..900,"italic":bool,"size":0.1..=1296 pt,"color":"#rrggbb"|[r,g,b,a],"tracking":-1000..=10000 (1/1000 em),"leading":pt|"auto","baselineShift":pt,"horizontalScale":%,"verticalScale":%,"underline":bool,"strikethrough":bool,"fauxBold":bool,"fauxItalic":bool,"kerning":1/1000em (manual, after each character)|"metrics"|"optical"|"off","caps":"normal|small|all","baseline":"normal|superscript|subscript","ligatures":bool,"discretionaryLigatures":bool,"features":{"ss01":1},"variations":{"wght":650},"language":str"##;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -1419,6 +1432,35 @@ mod tests {
         s.execute("edit.undo", json!({})).unwrap();
         assert_eq!(text_layer(&s, id).text, "a");
         assert_eq!(s.active().unwrap().history.past_len(), history);
+    }
+
+    #[test]
+    fn all_locked_type_layer_rejects_formatting_without_history() {
+        let mut s = session();
+        let id = s.execute("type.create", json!({"x": 20, "y": 20, "text": "a", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+        let other = s.execute("type.create", json!({"x": 20, "y": 60, "text": "b", "size": 12})).unwrap()["layer"].as_u64().unwrap();
+        s.execute("layer.setProps", json!({"layer": id, "locked": true})).unwrap();
+        let before = text_layer(&s, id);
+        let history = s.active().unwrap().history.past_len();
+
+        for (cmd, p) in [
+            ("type.setStyle", json!({"layer": id, "size": 40, "fauxBold": true})),
+            ("type.setStyle", json!({"layers": [other, id], "size": 40})),
+            ("type.warpText", json!({"layer": id, "style": "arc"})),
+            ("type.antiAlias.none", json!({"layer": id})),
+            ("type.orientation.vertical", json!({"layer": id})),
+            ("type.openType.swash", json!({"layer": id})),
+        ] {
+            let result = s.execute(cmd, p);
+            assert!(matches!(&result, Err(EngineError::Other(message)) if message.contains("locked")), "{cmd}: {result:?}");
+        }
+        assert_eq!(text_layer(&s, id), before);
+        assert_eq!(text_layer(&s, other).size_pt, 12.0);
+        assert_eq!(s.active().unwrap().history.past_len(), history);
+
+        s.execute("layer.setProps", json!({"layer": id, "locked": false})).unwrap();
+        s.execute("type.setStyle", json!({"layer": id, "size": 40})).unwrap();
+        assert_eq!(text_layer(&s, id).size_pt, 40.0);
     }
 
     #[test]

@@ -237,6 +237,15 @@ fn resize_box(app: &mut PhotocraftApp, ed: &TextEdit, i: u8, x: f64, y: f64) {
     let _ = app.run("type.edit", json!({"layer": ed.layer, "box": [o.x, o.y, x1 - x0, y1 - y0], "coalesce": ed.session}));
 }
 
+/// True when document point (`x`, `y`) lies inside the paragraph box of type layer `id` (false
+/// for point text).
+fn inside_box(app: &mut PhotocraftApp, id: LayerId, x: f64, y: f64) -> bool {
+    let Some((bx, by, w, h)) = box_shape(app, id) else { return false };
+    let Some((_, aff, _)) = layout(app, id) else { return false };
+    let (tx, ty) = to_text(&aff, x, y);
+    tx >= bx && tx <= bx + w && ty >= by && ty <= by + h
+}
+
 /// Pointer down with the Type tool. Returns true when the press was consumed (no box drag).
 pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) -> bool {
     if let Some(ed) = app.ui.text_edit.clone() {
@@ -247,7 +256,9 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifie
             }
             return true;
         }
-        if hit_layer(app, x, y) == Some(id) {
+        // Photoshop: anywhere inside the paragraph box places the caret, even off the glyphs
+        // (left of a line's start, below the last line); only a click outside it commits.
+        if hit_layer(app, x, y) == Some(id) || inside_box(app, id, x, y) {
             let off = hit_offset(app, id, x, y);
             if let Some(e) = app.ui.text_edit.as_mut() {
                 e.caret = off;
@@ -2057,9 +2068,20 @@ fn toggle_cell(ui: &mut egui::Ui, w: f32, on: bool, tip: &str, paint: impl FnOnc
     if on {
         ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.accent_border), egui::StrokeKind::Inside);
     }
-    paint(ui, r, if on { t.text } else { t.text_dim });
+    let enabled = ui.is_enabled();
+    paint(
+        ui,
+        r,
+        if !enabled {
+            t.text_faint
+        } else if on {
+            t.text
+        } else {
+            t.text_dim
+        },
+    );
     let tip = tip.to_string();
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &tip));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, &tip));
     resp.on_hover_text(tl!(&tip)).clicked()
 }
 
@@ -2352,14 +2374,32 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             ("justifyAll", tl!("Justify all"), A::JustifyAll),
         ];
         let cw = cell_width(full, items.len());
+        // Justification needs a paragraph box: on point text Photoshop greys the four justify
+        // buttons (#7713).
+        // The panel formats the layer being typed in, else every selected type layer.
+        let point = match formatting_params(app) {
+            Some(p) => p.get("layers").and_then(serde_json::Value::as_array).map_or_else(
+                || p.get("layer").and_then(serde_json::Value::as_u64).into_iter().collect::<Vec<_>>(),
+                |ids| ids.iter().filter_map(serde_json::Value::as_u64).collect(),
+            ),
+            None => Vec::new(),
+        }
+        .into_iter()
+        .any(|layer| box_shape(app, LayerId(layer)).is_none());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (key, tip, a) in items {
-                let clicked = toggle_cell(ui, cw, para.align == a, tip, |ui, r, col| {
-                    // The glyph keeps its size; the cell grows around it.
-                    let g = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 10.0));
-                    align_glyph(ui.painter(), g, a, if para.align == a { col } else { t.icon });
-                });
+                let justify = !matches!(a, A::Left | A::Center | A::Right);
+                let clicked = ui
+                    .add_enabled_ui(!(point && justify), |ui| {
+                        toggle_cell(ui, cw, para.align == a, tip, |ui, r, col| {
+                            // The glyph keeps its size; the cell grows around it.
+                            let g = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 10.0));
+                            let col = if !ui.is_enabled() || para.align == a { col } else { t.icon };
+                            align_glyph(ui.painter(), g, a, col);
+                        })
+                    })
+                    .inner;
                 if clicked {
                     apply(app, ui.ctx(), json!({"align": key}));
                 }
@@ -2387,10 +2427,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 apply(app, ui.ctx(), json!({"spaceAfter": v / u}));
             }
         });
-        let mut hy = para.hyphenate;
-        if crate::widgets::checkbox(ui, &mut hy, "Hyphenate").changed() {
-            apply(app, ui.ctx(), json!({"hyphenate": hy}));
-        }
+        // Hyphenate is stored (⌥⇧⌘H / PSD AutoHyphenate) but layout never breaks words (#6710).
         ui.add_space(ROW_GAP);
     }
 }

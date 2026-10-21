@@ -964,6 +964,33 @@ fn temporary_type_transform_free_scale_center_scale_move_skew_and_rotation() {
     }
 }
 
+/// Editing paragraph text, a click inside the box but off the glyphs moves the caret to the
+/// nearest offset, as in Photoshop; a click outside the box still commits.
+#[test]
+fn click_inside_the_paragraph_box_off_the_glyphs_moves_the_caret() {
+    use crate::canvas::{ToolEvent, tool_event};
+    // The box is 240 × 180; the two 32 pt lines only fill its top.
+    let (mut app, id) = transform_app(true, false, Affine::translate(400.0, 350.0));
+    let (bx, by, _, h) = super::box_shape(&app, id).unwrap();
+    let (l, aff, _) = layout(&mut app, id).unwrap();
+    let click = |app: &mut PhotocraftApp, tx: f32, ty: f32| {
+        let p = aff.apply(Point::new(f64::from(tx), f64::from(ty)));
+        tool_event(app, ToolEvent::Down { x: p.x, y: p.y, pressure: 1.0 }, Modifiers::NONE);
+        tool_event(app, ToolEvent::Up { x: p.x, y: p.y }, Modifiers::NONE);
+    };
+    let layers = app.session.active().unwrap().doc.layers.len();
+    // Near the bottom of the box, just right of its left edge.
+    assert!(!photocraft_text::text_point_inside(&l, bx + 8.0, by + h - 8.0, 6.0), "the point is off the glyphs");
+    click(&mut app, bx + 8.0, by + h - 8.0);
+    let ed = app.ui.text_edit.clone().expect("still editing");
+    // "Hello é世界\n" is 10 characters: the start of the second line.
+    assert_eq!((ed.layer, ed.caret, ed.anchor), (id.0, 10, 10));
+    // Outside the box the edit commits, without starting new text.
+    click(&mut app, bx - 40.0, by + h - 8.0);
+    assert!(app.ui.text_edit.is_none());
+    assert_eq!(app.session.active().unwrap().doc.layers.len(), layers);
+}
+
 #[test]
 fn temporary_type_transform_noop_cancel_and_stale_capture() {
     use crate::canvas::{ToolEvent, tool_event};
@@ -1552,6 +1579,14 @@ mod multi_layer_formatting {
     }
 
     #[test]
+    fn hyphenate_is_not_shown_while_layout_does_not_hyphenate() {
+        // #6710: layout never hyphenates; the control must stay hidden until it does.
+        let (app, _) = fixture();
+        let h = controls(app, true);
+        assert!(h.query_by_label("Hyphenate").is_none());
+    }
+
+    #[test]
     fn properties_edit_shown_metrics_and_paragraphs_with_a_non_type_primary() {
         let (mut app, ids) = fixture();
         let untouched = style(&app, ids[2], 0);
@@ -1568,8 +1603,6 @@ mod multi_layer_formatting {
         h.run();
         h.get_by_label("Center text").click();
         h.run();
-        h.get_by_label("Hyphenate").click();
-        h.run();
         number(&mut h, "Indent left margin", "9");
         for (id, scale) in [(ids[0], 2.0), (ids[1], 4.0)] {
             let c = style(h.state(), id, 0);
@@ -1578,7 +1611,6 @@ mod multi_layer_formatting {
             assert!(c.faux_bold);
             let p = text(h.state(), id).paragraph_runs()[0].style.clone();
             assert_eq!(p.align, TextAlign::Center);
-            assert!(p.hyphenate);
             assert_eq!(p.start_indent_pt, 9.0);
         }
         assert_eq!(style(h.state(), ids[2], 0), untouched);
@@ -2129,4 +2161,53 @@ fn type_mask_shift_adds_and_alt_subtracts_without_a_layer_row() {
     type_and_commit(&mut app, Modifiers::ALT);
     assert!(at(&app, stem.0, stem.1) < 0.01, "⌥ subtracts the glyphs");
     assert!(at(&app, 1050, 150) > 0.99, "and keeps the rest");
+}
+
+/// #7713: justification needs a paragraph box. On point text the Paragraph panel's four justify
+/// buttons are greyed, as in Photoshop; on paragraph text they work.
+#[test]
+fn justify_buttons_are_greyed_on_point_text() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let justify = ["Justify last left", "Justify last centered", "Justify last right", "Justify all"];
+    for (paragraph, enabled) in [(false, false), (true, true)] {
+        let mut app = new_app();
+        let mut p = json!({"text": "one two three four", "size": 24, "x": 300, "y": 420});
+        if paragraph {
+            p["box"] = json!([300, 300, 240, 180]);
+        }
+        app.run("type.create", p).unwrap();
+        let mut h = Harness::builder().with_size(vec2(320.0, 700.0)).build_ui_state(
+            |ui, app: &mut PhotocraftApp| {
+                if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                    crate::type_tool::character_panel(app, ui, true);
+                }
+            },
+            app,
+        );
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        h.run_steps(4);
+        for tip in justify {
+            assert_eq!(!h.get_by_label(tip).accesskit_node().is_disabled(), enabled, "{tip} on {}", if paragraph { "paragraph text" } else { "point text" });
+        }
+        assert!(!h.get_by_label("Center text").accesskit_node().is_disabled(), "alignment itself stays available");
+    }
+    // A selection of a paragraph and a point type layer formats both: justify is greyed.
+    let mut app = new_app();
+    let point = app.run("type.create", json!({"text": "point", "size": 24, "x": 300, "y": 420})).unwrap()["layer"].as_u64().unwrap();
+    let boxed =
+        app.run("type.create", json!({"text": "boxed text", "size": 24, "x": 300, "y": 300, "box": [300, 300, 240, 180]})).unwrap()["layer"].as_u64().unwrap();
+    app.run("layer.select", json!({"layer": point})).unwrap();
+    app.run("layer.select", json!({"layer": boxed, "mode": "add"})).unwrap();
+    assert_eq!(app.session.active().unwrap().selected_layers().len(), 2);
+    let mut h = Harness::builder().with_size(vec2(320.0, 700.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            if ui.ctx().fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                crate::type_tool::character_panel(app, ui, true);
+            }
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(4);
+    assert!(h.get_by_label("Justify all").accesskit_node().is_disabled(), "one of the formatted layers is point text");
 }
