@@ -1910,8 +1910,11 @@ fn folder_listing_takes_every_format_photocraft_opens() {
     for name in ["a.cr3", "IMG_0001.CR3", "a.orf", "a.raf", "a.rw2", "a.srf", "a.sr2"] {
         assert!(!super::openable_name(name), "{name}");
     }
-    // PhotoCraft does not read AVIF.
-    assert!(!super::openable_name("a.avif"));
+    // HEIC and AVIF open through libheif's heif-dec or macOS sips when the codecs can't
+    // (`photocraft_io::heif_tool`), so a batch takes them too.
+    for name in ["a.avif", "a.heic", "a.HEIF", "a.hif"] {
+        assert!(super::openable_name(name), "{name}");
+    }
 }
 
 /// A batch over a folder processes PAM, PFM and DDS files instead of skipping them.

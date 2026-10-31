@@ -316,10 +316,11 @@ fn save_as_offers_only_writable_formats_including_ico() {
         assert!(!filters.iter().any(|(_, exts)| exts.iter().any(|e| e == subtype)), "{name}: .{subtype} is offered");
     }
     // File Open lists readable Save As formats in their own type. Export-only formats must
-    // stay absent from both Open filters rather than advertising an unavailable decoder.
+    // stay absent from both Open filters rather than advertising an unavailable decoder. HEIC
+    // and AVIF open through the same helpers that write them, whatever the codecs read.
     for (name, exts) in SAVE_FILTERS {
         for ext in exts.iter().filter(|e| **e != "pdf") {
-            if photocraft_codecs::from_extension(ext).is_some_and(|format| !format.caps().read) {
+            if !helper_written.contains(ext) && photocraft_codecs::from_extension(ext).is_some_and(|format| !format.caps().read) {
                 assert!(!OPEN_EXTS.contains(ext), "{name}: export-only .{ext} must not appear in All Formats");
                 assert!(!OPEN_FILTERS.iter().any(|(_, open)| open.contains(ext)), "{name}: export-only .{ext} must not appear in an Open type");
                 continue;
