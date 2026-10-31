@@ -8,14 +8,21 @@
 //! rewritten to 1 (the specification says the EXIF tag must be ignored). CMYK files are refused
 //! rather than shown with the wrong colours. Both libraries run under `catch_unwind`: a panic on a
 //! hostile file is an error, never a crash.
+//!
+//! The browser build has the encoder but not the decoder: jxl-oxide would push the wasm past its
+//! per-file size cap (packaging/web/package.sh), so there opening a JPEG XL file says it isn't
+//! included.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::Format;
 use crate::error::CodecError;
 use crate::fidelity::Plan;
-use crate::image::{ChannelLayout, DecodeWarning, Image, Metadata, SampleType};
+use crate::image::{ChannelLayout, Image, SampleType};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::image::{DecodeWarning, Metadata};
 use crate::options::{EncodeOptions, Limits};
 
 const F: Format = Format::Jxl;
@@ -23,6 +30,7 @@ const F: Format = Format::Jxl;
 /// The container's signature box (the whole of it).
 const SIGNATURE: &[u8; 12] = b"\0\0\0\x0cJXL \r\n\x87\n";
 
+#[cfg(not(target_arch = "wasm32"))]
 fn err(e: impl std::fmt::Display) -> CodecError {
     CodecError::malformed(F, e)
 }
@@ -32,10 +40,17 @@ fn guarded<T>(on_panic: impl FnOnce() -> CodecError, f: impl FnOnce() -> Result<
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(on_panic()))
 }
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn decode(_: &[u8], _: &Limits, _: bool) -> Result<Image, CodecError> {
+    Err(CodecError::unsupported(F, "opening JPEG XL isn't included in the browser build of PhotoCraft; export is"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn decode(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> Result<Image, CodecError> {
     guarded(|| err("the JPEG XL decoder failed on this file"), || decode_inner(bytes, limits, keep_orientation))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn decode_inner(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> Result<Image, CodecError> {
     use jxl_oxide::image::BitDepth;
     use jxl_oxide::{AllocTracker, AuxBoxData, JxlImage, PixelFormat};
@@ -119,6 +134,7 @@ fn decode_inner(bytes: &[u8], limits: &Limits, keep_orientation: bool) -> Result
 }
 
 /// The orientation that undoes `o` (only the two quarter turns differ from their inverse).
+#[cfg(not(target_arch = "wasm32"))]
 fn inverse_orientation(o: u16) -> u16 {
     match o {
         6 => 8,
