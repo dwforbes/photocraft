@@ -3,7 +3,7 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, SampleType};
+use photocraft_codecs::{ChannelLayout, EncodeOptions, Format, Image, Limits, SampleType};
 use photocraft_color::{ColorMode, SampleType as DocSample};
 use photocraft_io::heif_tool::{self, Decoder, Encoder};
 use photocraft_io::*;
@@ -72,7 +72,7 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
                 assert_eq!(warnings.iter().any(|w| w.contains("reduced to 10-bit")), sample == SampleType::U16, "{warnings:?}");
                 for dec in decoders() {
                     let what = format!("{} → {} {format:?} {sample:?} alpha {alpha}", enc.name(), dec.name());
-                    let (back, notes) = heif_tool::decode_with(&dec, &bytes, format).unwrap_or_else(|e| panic!("{what}: {e}"));
+                    let (back, notes) = heif_tool::decode_with(&dec, &bytes, format, Limits::default()).unwrap_or_else(|e| panic!("{what}: {e}"));
                     assert_eq!(back.dimensions(), img.dimensions(), "{what}");
                     assert_eq!(back.layout().has_alpha(), alpha, "{what}");
                     assert!(notes.iter().any(|n| n.contains(dec.name())), "{notes:?}");
@@ -96,8 +96,20 @@ fn heif_enc_writes_lossless_files() {
     let (bytes, warnings) = heif_tool::encode_with(&enc, &img, Format::Heif, &opts).unwrap();
     assert!(!warnings.iter().any(|w| w.contains("lossy")), "{warnings:?}");
     for dec in decoders().into_iter().filter(|d| matches!(d, Decoder::HeifDec { .. })) {
-        let (back, _) = heif_tool::decode_with(&dec, &bytes, Format::Heif).unwrap();
+        let (back, _) = heif_tool::decode_with(&dec, &bytes, Format::Heif, Limits::default()).unwrap();
         assert_eq!(back.convert(ChannelLayout::Rgb, SampleType::U8).data(), img.data(), "lossless");
+    }
+}
+
+#[test]
+fn helper_decodes_are_held_to_the_import_limits() {
+    let Some(enc) = encoders().into_iter().next() else { return };
+    let (bytes, _) = heif_tool::encode_with(&enc, &picture(SampleType::U8, false), Format::Heif, &EncodeOptions::default()).unwrap();
+    // 96×64 RGB is 18 KiB of pixels: over a 4 KiB budget, as the built-in decoders would refuse it.
+    let tight = Limits { max_alloc: 4 << 10, ..Limits::default() };
+    for dec in decoders() {
+        let err = heif_tool::decode_with(&dec, &bytes, Format::Heif, tight).expect_err(dec.name());
+        assert!(err.to_string().contains("limit"), "{}: {err}", dec.name());
     }
 }
 
@@ -120,7 +132,7 @@ fn rotation_is_applied_once_by_every_decoder() {
     let bytes = bytes.unwrap();
     let want = picture(SampleType::U8, false).oriented(6).unwrap();
     for dec in decoders() {
-        let (back, _) = heif_tool::decode_with(&dec, &bytes, Format::Heif).unwrap();
+        let (back, _) = heif_tool::decode_with(&dec, &bytes, Format::Heif, Limits::default()).unwrap();
         assert_eq!(back.dimensions(), (64, 96), "{} turns it upright", dec.name());
         assert!(mean_diff(&want, &back) < 0.02, "{}: {}", dec.name(), mean_diff(&want, &back));
         let exif = back.meta.exif.as_deref().map_or(1, photocraft_codecs::exif_orientation);
@@ -153,7 +165,7 @@ fn a_colour_signalled_only_by_nclx_gets_its_profile() {
     let bytes = bytes.unwrap();
     assert_eq!(heif_tool::nclx(&bytes).map(|n| (n.primaries, n.transfer)), Some((12, 13)));
     for dec in decoders() {
-        let (back, notes) = heif_tool::decode_with(&dec, &bytes, Format::Heif).unwrap();
+        let (back, notes) = heif_tool::decode_with(&dec, &bytes, Format::Heif, Limits::default()).unwrap();
         assert!(back.icc.is_some(), "{}: Display P3 must not open as sRGB ({notes:?})", dec.name());
     }
 }

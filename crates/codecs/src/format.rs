@@ -98,7 +98,7 @@ pub const ASYMMETRIC_EXCEPTIONS: &[(Format, &str)] = &[
     ),
     (
         Format::Heif,
-        "HEIC decode uses heic-rs (pure Rust, in the optional photocraft-heif crate behind the \
+        "HEIC decode uses heic-rs (pure Rust, in the optional craft-heif crate behind the \
          non-default `heif` feature, which official builds enable), so iPhone and Mac photos open; \
          writing needs an HEVC encoder, and the mature ones (x265, libheif) are C, so write stays \
          unsupported here. Without the feature HEIF is detected but neither read nor written. \

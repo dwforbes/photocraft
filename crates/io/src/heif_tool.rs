@@ -20,7 +20,7 @@
 //! `heif-enc` / `heif-dec` / `heif-convert` on the `PATH` and in the usual install folders, then
 //! `/usr/bin/sips` on macOS. Looked for once per session.
 
-use photocraft_codecs::{EncodeOptions, Format, Image};
+use photocraft_codecs::{DecodeOptions, EncodeOptions, Format, Image, Limits};
 
 use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,16 +214,17 @@ pub fn encode_with(_: &Encoder, _: &Image, _: Format, _: &EncodeOptions) -> Resu
 
 /// Decodes a HEIC or AVIF file with the installed tool: the upright image, tagged with its
 /// colour, and a note saying which tool opened it. `Ok(None)` when there is none.
-pub(crate) fn decode(bytes: &[u8], format: Format) -> Result<Option<(Image, Vec<String>)>, IoError> {
+pub(crate) fn decode(bytes: &[u8], format: Format, limits: Limits) -> Result<Option<(Image, Vec<String>)>, IoError> {
     match decoder() {
-        Some(tool) => decode_with(tool, bytes, format).map(Some),
+        Some(tool) => decode_with(tool, bytes, format, limits).map(Some),
         None => Ok(None),
     }
 }
 
-/// [`decode`] with the given tool.
+/// [`decode`] with the given tool. The image it writes is read back within `limits`, as the
+/// built-in decoders would read the file.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Image, Vec<String>), IoError> {
+pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format, limits: Limits) -> Result<(Image, Vec<String>), IoError> {
     let name = if format == Format::Avif { "AVIF" } else { "HEIC" };
     let dir = TempDir::new()?;
     let input = dir.write(if format == Format::Avif { "in.avif" } else { "in.heic" }, bytes)?;
@@ -246,7 +247,7 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Imag
     cmd.run(tool.name(), None, std::time::Duration::from_secs(300), 1 << 20)?;
     let png = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("{} didn't decode the {name} file: {e}", tool.name())))?;
     // The default decode turns the pixels upright from the PNG's EXIF Orientation (see the module docs).
-    let mut img = photocraft_codecs::decode_as(Format::Png, &png)?;
+    let mut img = photocraft_codecs::decode_as_with(Format::Png, &png, &DecodeOptions { limits, ..Default::default() })?;
     let mut warnings = vec![external::tool_note(name, "opened", tool.name(), confined)];
     if img.icc.is_none() && !img.layout().is_gray() {
         match nclx(bytes).map(profile_for) {
@@ -259,7 +260,7 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format) -> Result<(Imag
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn decode_with(_: &Decoder, _: &[u8], _: Format) -> Result<(Image, Vec<String>), IoError> {
+pub fn decode_with(_: &Decoder, _: &[u8], _: Format, _: Limits) -> Result<(Image, Vec<String>), IoError> {
     Err(IoError::Unsupported("HEIC and AVIF can't be opened with a helper in the browser".into()))
 }
 
@@ -474,7 +475,7 @@ mod tests {
             let enc = Encoder::HeifEnc { path: program.into(), version: (1, 23, 6) };
             assert!(encode_with(&enc, &img, Format::Heif, &opts).is_err(), "{program}");
             let dec = Decoder::HeifDec { path: program.into() };
-            assert!(decode_with(&dec, b"not a heic", Format::Heif).is_err(), "{program}");
+            assert!(decode_with(&dec, b"not a heic", Format::Heif, Limits::default()).is_err(), "{program}");
         }
         assert!(probe_encoder(std::path::Path::new("/nonexistent/heif-enc")).is_none());
     }
