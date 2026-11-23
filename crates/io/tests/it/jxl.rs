@@ -67,16 +67,18 @@ fn the_built_in_encoder_is_lossless() {
 #[test]
 fn the_built_in_encoder_says_what_it_cannot_do() {
     let mut d = single(ColorMode::Rgb, SampleType::U8, false);
-    let lossy = ExportOptions { encode: photocraft_codecs::EncodeOptions { jxl_quality: Some(80), ..Default::default() }, ..built_in() };
+    let lossy = ExportOptions { jxl_quality: Some(80), ..built_in() };
     let (back, warnings) = round_trip(&d, &lossy);
     assert!(warnings.iter().any(|w| w.contains("written lossless")), "{warnings:?}");
     assert_eq!(max_diff(&d, &back), 0.0);
 
-    // A wide-gamut document is converted to sRGB (the built-in encoder writes no profile).
-    d.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes());
+    // A wide-gamut document is converted to sRGB (the built-in encoder writes no profile), and
+    // the decoder tags the file with the codestream's own colour encoding: sRGB, not Display P3.
+    d.icc_profile = Some(craft_cms::Builtin::DisplayP3.profile().to_bytes());
     let (back, warnings) = round_trip(&d, &built_in());
     assert!(warnings.iter().any(|w| w.contains("converted to sRGB") && w.contains("cjxl")), "{warnings:?}");
-    assert!(back.icc_profile.is_none());
+    let described = back.icc_profile.as_deref().map(|p| craft_cms::Profile::parse(p).unwrap().description);
+    assert!(described.as_deref().is_some_and(|d| d.contains("Srgb") && !d.contains("P3")), "{described:?}");
 }
 
 #[test]
@@ -84,7 +86,7 @@ fn cjxl_keeps_depth_profile_and_metadata() {
     let Some(tool) = cjxl() else { return };
     assert!(tool.version >= jxl_tool::MIN_VERSION);
     let mut d = single(ColorMode::Rgb, SampleType::U16, true);
-    d.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes());
+    d.icc_profile = Some(craft_cms::Builtin::DisplayP3.profile().to_bytes());
     d.metadata.xmp = Some("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/></x:xmpmeta>".into());
     let (back, warnings) = round_trip(&d, &ExportOptions::default());
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -107,7 +109,7 @@ fn cjxl_writes_lossy_files() {
     s.write_region(d.bounds(), &vals);
     d.layers.push(photocraft_doc::Layer::new("Background", photocraft_doc::LayerContent::Raster(s)));
     let lossless = export(&d, "x.jxl", &ExportOptions::default()).unwrap();
-    let opts = ExportOptions { encode: photocraft_codecs::EncodeOptions { jxl_quality: Some(60), ..Default::default() }, ..ExportOptions::default() };
+    let opts = ExportOptions { jxl_quality: Some(60), ..ExportOptions::default() };
     let lossy = export(&d, "x.jxl", &opts).unwrap();
     assert!(lossy.warnings.iter().any(|w| w == "lossy compression"), "{:?}", lossy.warnings);
     assert!(lossy.warnings.first().is_some_and(|w| w.starts_with("JPEG XL written with cjxl")), "{:?}", lossy.warnings);

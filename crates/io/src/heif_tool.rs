@@ -20,11 +20,11 @@
 //! `heif-enc` / `heif-dec` / `heif-convert` on the `PATH` and in the usual install folders, then
 //! `/usr/bin/sips` on macOS. Looked for once per session.
 
-use photocraft_codecs::{DecodeOptions, EncodeOptions, Format, Image, Limits};
+use photocraft_codecs::{Format, Image, Limits};
 
-use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::external::{self, Profile, TempDir};
+use crate::{ExportOptions, IoError};
 
 /// The program that writes HEIC and AVIF.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +111,7 @@ pub fn arguments(
     input: &std::path::Path,
     output: &std::path::Path,
     sixteen_bit: bool,
-    opts: &EncodeOptions,
+    opts: &ExportOptions,
 ) -> Vec<std::ffi::OsString> {
     let mut a: Vec<std::ffi::OsString> = Vec::new();
     match tool {
@@ -149,7 +149,7 @@ pub type Encoded = (Vec<u8>, Vec<String>);
 
 /// Encodes `img` (already in the colour model, alpha and profile it is saved with) as HEIC or AVIF
 /// with the installed tool. `Ok(None)` when there is none.
-pub(crate) fn encode(img: &Image, format: Format, opts: &EncodeOptions) -> Result<Option<Encoded>, IoError> {
+pub(crate) fn encode(img: &Image, format: Format, opts: &ExportOptions) -> Result<Option<Encoded>, IoError> {
     match encoder() {
         Some(tool) => encode_with(tool, img, format, opts).map(Some),
         None => Ok(None),
@@ -158,7 +158,7 @@ pub(crate) fn encode(img: &Image, format: Format, opts: &EncodeOptions) -> Resul
 
 /// [`encode`] with the given tool.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOptions) -> Result<Encoded, IoError> {
+pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &ExportOptions) -> Result<Encoded, IoError> {
     use photocraft_codecs::SampleType;
     let mut warnings = Vec::new();
     let name = if format == Format::Avif { "AVIF" } else { "HEIC" };
@@ -177,7 +177,7 @@ pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOpt
         (None, Encoder::HeifEnc { .. }) => {}
         (Some(_), _) => warnings.push("lossy compression".to_string()),
     }
-    if opts.embed_metadata {
+    if opts.encode.embed_metadata {
         if img.meta.xmp.is_some() && matches!(tool, Encoder::Sips { .. }) {
             warnings.push("XMP not supported by sips; it will be dropped".to_string());
         }
@@ -190,7 +190,7 @@ pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOpt
     }
     let sixteen_bit = img.sample_type() != SampleType::U8;
     let dir = TempDir::new()?;
-    let input = dir.write("in.png", &external::png(img, opts)?)?;
+    let input = dir.write("in.png", &external::png(img, &opts.encode)?)?;
     let output = dir.path.join(if format == Format::Avif { "out.avif" } else { "out.heic" });
     let program = match tool {
         Encoder::HeifEnc { path, .. } | Encoder::Sips { path } => path,
@@ -208,7 +208,7 @@ pub fn encode_with(tool: &Encoder, img: &Image, format: Format, opts: &EncodeOpt
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn encode_with(_: &Encoder, _: &Image, _: Format, _: &EncodeOptions) -> Result<Encoded, IoError> {
+pub fn encode_with(_: &Encoder, _: &Image, _: Format, _: &ExportOptions) -> Result<Encoded, IoError> {
     Err(IoError::Unsupported("HEIC and AVIF can't be written in the browser".into()))
 }
 
@@ -247,7 +247,7 @@ pub fn decode_with(tool: &Decoder, bytes: &[u8], format: Format, limits: Limits)
     cmd.run(tool.name(), None, std::time::Duration::from_secs(300), 1 << 20)?;
     let png = std::fs::read(&output).map_err(|e| IoError::Unsupported(format!("{} didn't decode the {name} file: {e}", tool.name())))?;
     // The default decode turns the pixels upright from the PNG's EXIF Orientation (see the module docs).
-    let mut img = photocraft_codecs::decode_as_with(Format::Png, &png, &DecodeOptions { limits, ..Default::default() })?;
+    let mut img = photocraft_codecs::decode_as_with(Format::Png, &png, &photocraft_codecs::DecodeOptions { limits, ..Default::default() })?;
     let mut warnings = vec![external::tool_note(name, "opened", tool.name(), confined)];
     if img.icc.is_none() && !img.layout().is_gray() {
         match nclx(bytes).map(profile_for) {
@@ -321,7 +321,7 @@ pub fn nclx(bytes: &[u8]) -> Option<Nclx> {
 /// The profile for an `nclx` signal: `Ok(None)` for sRGB (or unspecified), the matching built-in
 /// profile, or a warning when PhotoCraft has no profile for it.
 pub fn profile_for(n: Nclx) -> Result<Option<Vec<u8>>, String> {
-    use photocraft_cms::Builtin;
+    use craft_cms::Builtin;
     // 2 is "unspecified": treated as sRGB, like an untagged file.
     let srgb_tf = matches!(n.transfer, 2 | 13);
     let rec709_tf = matches!(n.transfer, 1 | 6 | 14 | 15);
@@ -453,7 +453,7 @@ mod tests {
         let enc = Encoder::HeifEnc { path: "heif-enc".into(), version: (1, 23, 6) };
         let (i, o) = (std::path::Path::new("/t/in.png"), std::path::Path::new("/t/out.heic"));
         let args = |t: &Encoder, f, sixteen, q| -> Vec<String> {
-            let opts = EncodeOptions { heif_quality: q, ..Default::default() };
+            let opts = ExportOptions { heif_quality: q, ..Default::default() };
             arguments(t, f, i, o, sixteen, &opts).into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
         };
         assert_eq!(args(&enc, Format::Heif, false, Some(80)), ["/t/in.png", "-o", "/t/out.heic", "-q", "80"]);
@@ -470,7 +470,7 @@ mod tests {
     #[test]
     fn a_failing_tool_is_an_error_not_a_panic() {
         let img = Image::from_u8(4, 4, photocraft_codecs::ChannelLayout::Rgb, vec![7; 48]).unwrap();
-        let opts = EncodeOptions::default();
+        let opts = ExportOptions::default();
         for program in ["/usr/bin/false", "/usr/bin/true", "/nonexistent/heif-enc"] {
             let enc = Encoder::HeifEnc { path: program.into(), version: (1, 23, 6) };
             assert!(encode_with(&enc, &img, Format::Heif, &opts).is_err(), "{program}");

@@ -62,7 +62,7 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
         for format in [Format::Heif, Format::Avif] {
             for (sample, alpha) in [(SampleType::U8, false), (SampleType::U8, true), (SampleType::U16, false)] {
                 let img = picture(sample, alpha);
-                let (bytes, warnings) = heif_tool::encode_with(&enc, &img, format, &EncodeOptions::default()).unwrap();
+                let (bytes, warnings) = heif_tool::encode_with(&enc, &img, format, &ExportOptions::default()).unwrap();
                 assert_eq!(photocraft_codecs::detect(&bytes), Some(format));
                 assert!(warnings.iter().any(|w| w == "lossy compression"), "{warnings:?}");
                 // The first note says which tool wrote it and whether it ran sandboxed.
@@ -92,7 +92,7 @@ fn every_encoder_and_decoder_round_trip_heic_and_avif() {
 fn heif_enc_writes_lossless_files() {
     let Some(enc) = heif_enc() else { return };
     let img = picture(SampleType::U8, false);
-    let opts = EncodeOptions { heif_quality: None, ..Default::default() };
+    let opts = ExportOptions { heif_quality: None, ..Default::default() };
     let (bytes, warnings) = heif_tool::encode_with(&enc, &img, Format::Heif, &opts).unwrap();
     assert!(!warnings.iter().any(|w| w.contains("lossy")), "{warnings:?}");
     for dec in decoders().into_iter().filter(|d| matches!(d, Decoder::HeifDec { .. })) {
@@ -104,7 +104,7 @@ fn heif_enc_writes_lossless_files() {
 #[test]
 fn helper_decodes_are_held_to_the_import_limits() {
     let Some(enc) = encoders().into_iter().next() else { return };
-    let (bytes, _) = heif_tool::encode_with(&enc, &picture(SampleType::U8, false), Format::Heif, &EncodeOptions::default()).unwrap();
+    let (bytes, _) = heif_tool::encode_with(&enc, &picture(SampleType::U8, false), Format::Heif, &ExportOptions::default()).unwrap();
     // 96×64 RGB is 18 KiB of pixels: over a 4 KiB budget, as the built-in decoders would refuse it.
     let tight = Limits { max_alloc: 4 << 10, ..Limits::default() };
     for dec in decoders() {
@@ -187,7 +187,7 @@ fn export_and_open_through_photocraft_io() {
         return;
     }
     let mut d = document(true);
-    d.icc_profile = Some(photocraft_cms::Builtin::DisplayP3.profile().to_bytes());
+    d.icc_profile = Some(craft_cms::Builtin::DisplayP3.profile().to_bytes());
     for (ext, format) in [("heic", Format::Heif), ("avif", Format::Avif)] {
         let r = export(&d, &format!("x.{ext}"), &ExportOptions::default()).unwrap();
         assert_eq!(photocraft_codecs::detect(&r.bytes), Some(format));
@@ -214,7 +214,7 @@ fn sips_says_what_it_drops() {
     let sips = Encoder::Sips { path: "/usr/bin/sips".into() };
     let mut img = picture(SampleType::U8, false);
     img.meta.xmp = Some("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>".into());
-    let (_, warnings) = heif_tool::encode_with(&sips, &img, Format::Heif, &EncodeOptions { heif_quality: None, ..Default::default() }).unwrap();
+    let (_, warnings) = heif_tool::encode_with(&sips, &img, Format::Heif, &ExportOptions { heif_quality: None, ..Default::default() }).unwrap();
     assert!(warnings.iter().any(|w| w.contains("XMP")), "{warnings:?}");
     assert!(warnings.iter().any(|w| w.contains("lossless")), "{warnings:?}");
 }

@@ -22,11 +22,11 @@
 //! The program runs directly, never through a shell. It is stopped if it runs past a deadline
 //! that grows with the image, and its own error message is passed on when it fails.
 
-use photocraft_codecs::{EncodeOptions, Image};
+use photocraft_codecs::Image;
 
-use crate::IoError;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::external::{self, Profile, RunError, TempDir};
+use crate::{ExportOptions, IoError};
 
 /// libjxl's `cjxl` as found on this system.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub fn cjxl() -> Option<&'static Cjxl> {
 }
 
 /// The `cjxl` arguments (after the input and output paths) for these options.
-pub fn arguments(opts: &EncodeOptions) -> Vec<String> {
+pub fn arguments(opts: &ExportOptions) -> Vec<String> {
     let effort = opts.jxl_effort.clamp(1, 10).to_string();
     match opts.jxl_quality {
         Some(q) => vec!["-q".into(), q.clamp(1, 100).to_string(), "-e".into(), effort],
@@ -68,7 +68,7 @@ type Encoded = (Vec<u8>, Vec<String>);
 /// Encodes `img` (already in the colour model, alpha and profile it is saved with) with `cjxl`:
 /// the file's bytes and what the export changed. `Ok(None)` when `cjxl` isn't available, so the
 /// caller uses the built-in encoder.
-pub(crate) fn encode(img: &Image, opts: &EncodeOptions) -> Result<Option<Encoded>, IoError> {
+pub(crate) fn encode(img: &Image, opts: &ExportOptions) -> Result<Option<Encoded>, IoError> {
     match cjxl() {
         Some(tool) => encode_with(tool, img, opts).map(Some),
         None => Ok(None),
@@ -77,7 +77,7 @@ pub(crate) fn encode(img: &Image, opts: &EncodeOptions) -> Result<Option<Encoded
 
 /// [`encode`] with the given program.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Result<Encoded, IoError> {
+pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &ExportOptions) -> Result<Encoded, IoError> {
     let mut warnings = Vec::new();
     // PNG holds up to 16 bits per sample: float (HDR) data is clipped to 0..1 on the way.
     if img.sample_type().is_float() {
@@ -89,10 +89,10 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
     if opts.jxl_quality.is_some() {
         warnings.push("lossy compression".to_string());
     }
-    if opts.embed_metadata && img.meta.dpi.is_some() {
+    if opts.encode.embed_metadata && img.meta.dpi.is_some() {
         warnings.push("resolution (DPI) not supported; it will be dropped".to_string());
     }
-    if opts.embed_metadata && !img.meta.text.is_empty() {
+    if opts.encode.embed_metadata && !img.meta.text.is_empty() {
         warnings.push("text metadata not supported; it will be dropped".to_string());
     }
     let timeout = external::timeout_for(img);
@@ -102,13 +102,14 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
     // goes straight to files for the rest of the session.
     static NO_PIPES: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
     let no_pipes = |path: &std::path::Path| NO_PIPES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|p| p == path);
-    let piping = if no_pipes(&tool.path) { Err(RunError::Failed(String::new())) } else { piped(tool, external::png(img, opts)?, opts, timeout, out_cap) };
+    let piping =
+        if no_pipes(&tool.path) { Err(RunError::Failed(String::new())) } else { piped(tool, external::png(img, &opts.encode)?, opts, timeout, out_cap) };
     let (bytes, confined) = match piping {
         Ok(done) => done,
         // A program that can't start, or that ran out of time, would do the same again.
         Err(RunError::Spawn(e) | RunError::Timeout(e)) => return Err(IoError::Unsupported(e)),
         Err(RunError::Failed(_)) => {
-            let done = through_files(tool, external::png(img, opts)?, opts, timeout)?;
+            let done = through_files(tool, external::png(img, &opts.encode)?, opts, timeout)?;
             // Files worked where the pipe didn't: this cjxl can't pipe.
             if !no_pipes(&tool.path) {
                 NO_PIPES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(tool.path.clone());
@@ -121,14 +122,14 @@ pub(crate) fn encode_with(tool: &Cjxl, img: &Image, opts: &EncodeOptions) -> Res
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn encode_with(_: &Cjxl, _: &Image, _: &EncodeOptions) -> Result<Encoded, IoError> {
+pub(crate) fn encode_with(_: &Cjxl, _: &Image, _: &ExportOptions) -> Result<Encoded, IoError> {
     Err(IoError::Unsupported("cjxl can't run in the browser".into()))
 }
 
 /// `cjxl - -`: the PNG on standard input, the JPEG XL file on standard output; and whether `cjxl`
 /// ran sandboxed.
 #[cfg(not(target_arch = "wasm32"))]
-fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration, out_cap: u64) -> Result<(Vec<u8>, bool), RunError> {
+fn piped(tool: &Cjxl, png: Vec<u8>, opts: &ExportOptions, timeout: std::time::Duration, out_cap: u64) -> Result<(Vec<u8>, bool), RunError> {
     // The job folder stays empty: it is the sandbox's only writable place and the working folder,
     // where versions before 0.12 would have read a file named `-` instead of standard input.
     let job = TempDir::new().map_err(|e| RunError::Failed(e.to_string()))?;
@@ -143,7 +144,7 @@ fn piped(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Du
 
 /// `cjxl in.png out.jxl` in a private temporary folder, for when piping fails.
 #[cfg(not(target_arch = "wasm32"))]
-fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &EncodeOptions, timeout: std::time::Duration) -> Result<(Vec<u8>, bool), IoError> {
+fn through_files(tool: &Cjxl, png: Vec<u8>, opts: &ExportOptions, timeout: std::time::Duration) -> Result<(Vec<u8>, bool), IoError> {
     let dir = TempDir::new()?;
     let input = dir.write("in.png", &png)?;
     drop(png);
@@ -180,10 +181,10 @@ mod tests {
 
     #[test]
     fn arguments_follow_the_options() {
-        assert_eq!(arguments(&EncodeOptions::default()), ["-d", "0", "-e", "7"]);
-        let o = EncodeOptions { jxl_quality: Some(85), jxl_effort: 3, ..Default::default() };
+        assert_eq!(arguments(&ExportOptions::default()), ["-d", "0", "-e", "7"]);
+        let o = ExportOptions { jxl_quality: Some(85), jxl_effort: 3, ..Default::default() };
         assert_eq!(arguments(&o), ["-q", "85", "-e", "3"]);
-        let o = EncodeOptions { jxl_quality: Some(0), jxl_effort: 99, ..Default::default() };
+        let o = ExportOptions { jxl_quality: Some(0), jxl_effort: 99, ..Default::default() };
         assert_eq!(arguments(&o), ["-q", "1", "-e", "10"], "out-of-range values are clamped");
     }
 
@@ -199,16 +200,16 @@ mod tests {
     #[test]
     fn a_missing_or_failing_program_is_an_error_not_a_panic() {
         let img = small();
-        let r = encode_with(&tool("/nonexistent/cjxl", (0, 12, 0)), &img, &EncodeOptions::default());
+        let r = encode_with(&tool("/nonexistent/cjxl", (0, 12, 0)), &img, &ExportOptions::default());
         assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("couldn't run cjxl")), "{r:?}");
         assert!(probe(std::path::Path::new("/nonexistent/cjxl")).is_none());
         #[cfg(unix)]
         for version in [(0, 7, 0), (0, 12, 0)] {
             // `false` fails both ways (piped, then with files).
-            let r = encode_with(&tool("/usr/bin/false", version), &img, &EncodeOptions::default());
+            let r = encode_with(&tool("/usr/bin/false", version), &img, &ExportOptions::default());
             assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("cjxl failed")), "{r:?}");
             // `true` writes nothing: not a JPEG XL file on standard output, then no output file.
-            let r = encode_with(&tool("/usr/bin/true", version), &img, &EncodeOptions::default());
+            let r = encode_with(&tool("/usr/bin/true", version), &img, &ExportOptions::default());
             assert!(matches!(&r, Err(IoError::Unsupported(m)) if m.contains("didn't write")), "{r:?}");
         }
     }
@@ -223,14 +224,15 @@ mod tests {
             return;
         };
         let img = small();
-        let opts = EncodeOptions::default();
+        let opts = ExportOptions::default();
         let t = std::time::Duration::from_secs(60);
         let decoded = |bytes: &[u8]| photocraft_codecs::decode(bytes).unwrap();
         // Piping is checked on the versions verified to read standard input (libjxl 0.7 opens "-"
         // as a file name); on any version the export itself must work, through files if need be.
         if found.version >= (0, 12, 0) {
             for version in [found.version, (0, 7, 0)] {
-                let (bytes, confined) = piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts).unwrap(), &opts, t, 1 << 20).unwrap();
+                let (bytes, confined) =
+                    piped(&tool(found.path.to_str().unwrap(), version), external::png(&img, &opts.encode).unwrap(), &opts, t, 1 << 20).unwrap();
                 assert_eq!(confined, crate::tool_sandbox().is_some());
                 assert_eq!(decoded(&bytes).data(), img.data(), "lossless through pipes ({version:?})");
             }
@@ -239,7 +241,7 @@ mod tests {
             let (bytes, notes) = encode_with(found, &img, &opts).unwrap();
             assert_eq!(decoded(&bytes).data(), img.data(), "{notes:?}");
         }
-        let (bytes, confined) = through_files(found, external::png(&img, &opts).unwrap(), &opts, t).unwrap();
+        let (bytes, confined) = through_files(found, external::png(&img, &opts.encode).unwrap(), &opts, t).unwrap();
         assert_eq!(confined, crate::tool_sandbox().is_some());
         assert_eq!(decoded(&bytes).data(), img.data());
 
